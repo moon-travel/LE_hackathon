@@ -99,7 +99,7 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
 
 - [ ] 11. Retention_Service（同期削除・走査）実装 【担当: A / src/lib/retention/】
   - [ ] 11.1 同期削除と走査ロジック
-    - src/lib/retention/deleteTemplate.ts（退場・同意撤回・利用者要求で即delete）, src/lib/retention/scanner.ts（setInterval 1分周期+手動発火で expireAt<=now を即削除）、ACTIVE保持中は延期、削除をAuditLog記録（内容記録しない）
+    - src/lib/retention/deleteTemplate.ts（同意撤回・利用者削除要求で即delete。**退場は契機に含めない**。退場はタスク10の expireAt 設定のみ）, src/lib/retention/computeExpireAt.ts（退場時刻+retentionDays。CLOSED/FORCE_CLOSED両経路から呼べるよう公開）, src/lib/retention/scanner.ts（setInterval 1分周期+手動発火で expireAt<=now を即削除）、ACTIVE保持中は延期（削除要求時に expireAt=now を書き、走査側でACTIVE保持アカウントをスキップ。専用フラグは設けない）、削除をAuditLog記録（内容記録しない）
     - _Requirements: 10.4, 10.5, 10.6, 10.7, 10.8, 10.11_
   - [ ]* 11.2 Property 12: 削除後の照合不成立
     - **Validates: Requirements 10.4, 10.7**
@@ -182,7 +182,7 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - _Requirements: 11.10, 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 14.8, 14.9_
 
 - [ ] 23. 端末UI画面の骨格実装 【担当: C / src/app/(terminals)/】
-  - enroll/page.tsx（同意画面5項目表示、カメラ→ベクトル化→元画像破棄→/api/enroll）, entry/page.tsx, service/page.tsx（/api/pay,/api/pass）, exit/page.tsx, admin/page.tsx。API呼び出しは凍結型契約経由
+  - enroll/page.tsx（同意画面5項目表示、カメラ→ベクトル化→元画像破棄→/api/enroll）, entry/page.tsx, service/page.tsx（/api/pay,/api/pass）, exit/page.tsx（残高と保管期限を表示し、「顔データを今すぐ削除」を確認操作つきで提示→/api/consent 撤回。削除が取り消せないこと・再入場には再登録が必要なことを表示。要件10-12）, admin/page.tsx。API呼び出しは凍結型契約経由
   - 所有ファイル: src/app/(terminals)/ 配下すべて
   - _Requirements: 1.1, 3.1, 5.1, 7.2, 8.3, 11.1, 14.2_
 
@@ -196,8 +196,8 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - _Requirements: 3.2, 8.6, 10.5_
 
 - [ ] 26. デモ背骨のE2E結線確認 【担当: 統合】
-  - 入場→外出→再入場（ACTIVE維持）→別室（利用権検証）→退場（顔削除）→削除後の顔で再入場失敗、を自動テストで結線確認。src/tests/e2e-backbone.test.ts（API層で検証）
-  - _Requirements: 3.4, 4.2, 4.4, 7.3, 8.1, 10.7_
+  - 入場→外出→再入場（ACTIVE維持）→別室（利用権検証）→退場（CLOSED化+expireAt設定、この時点では顔は消えない）→利用者の削除操作で同期削除→削除後の顔で再入場失敗、を自動テストで結線確認。src/tests/e2e-backbone.test.ts（API層で検証）
+  - _Requirements: 3.4, 4.2, 4.4, 7.3, 8.1, 8.2, 10.7_
 
 - [ ] 27. 最終チェックポイント — 全プロパティ/全テスト確認 【担当: 統合】
   - Property 1〜12 の12本と全ユニット/シナリオテスト、tsc --noEmit が通ることを確認。問題があれば利用者に確認

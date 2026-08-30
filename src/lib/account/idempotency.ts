@@ -1,29 +1,35 @@
 // 担当B所有: 支払いの冪等キー（要件5-6）。
-// 判断3: 時刻窓ではなく決定的キー文字列（terminal:amount:sessionId:窓ID）で同一窓を同一キーに畳む。
-// 「同一の Service_Terminal・同一の支払い金額・同一の滞在セッションを対象とする要求」を
-// 一定時間窓（既定60秒）で1件に畳む。窓IDは受付時刻を窓幅で床関数した決定的な値。
-
-/** 冪等の時間窓（ミリ秒）。要件5-6 は60秒。 */
-export const IDEMPOTENCY_WINDOW_MS = 60_000;
+//
+// 【T2・時刻窓バグの除去】旧実装は受付時刻を60秒で床関数した「窓ID」をキーに含めていた。
+// これには2つの欠陥があった:
+//   (a) 窓境界（例 59.9秒 と 60.1秒）をまたぐ同一支払いが別キーになり二重減算しうる
+//   (b) 同一窓内の「正当な2回目の同額支払い」が同一キーに畳まれて握りつぶされる
+// よって時刻窓 floor を廃止し、キーは (terminal, amount, sessionId, clientRef) の決定的文字列とする。
+//
+// clientRef は呼び出し側（端末）が発行する一意 ID。これがあるとき冪等性は厳密になる。
+// 型契約 src/types/api.ts（PayRequest）は凍結でフィールド追加できないため、
+// clientRef 未指定時は時刻に依存しないフォールバックキーを用い、
+// 重複判定は「同一セッション内の同一(terminal,amount)取引の存在」を取引履歴ベースで行う
+// （charge.ts の recentDuplicateWindowMs による直近判定に委譲）。
 
 export interface IdempotencyKeyInput {
   terminal: string;
   amount: number;
-  /** 対象滞在セッション。未指定はアカウント単位に代替（呼び出し側で accountId を渡す）。 */
+  /** 対象滞在セッション。 */
   sessionId: string;
-  /** 受付時刻（ms）。省略時は Date.now()。 */
-  now?: number;
-  /** 時間窓幅（ms）。省略時は IDEMPOTENCY_WINDOW_MS。 */
-  windowMs?: number;
+  /**
+   * 呼び出し側（端末）が発行する一意 ID。指定時は厳密な冪等キーになる。
+   * 未指定時は時刻非依存のフォールバックキーを生成する。
+   */
+  clientRef?: string;
 }
 
 /**
- * 決定的な冪等キー文字列を算出する。
- * 同一 (terminal, amount, sessionId) かつ同一時間窓の要求は同一キーになる。
+ * 決定的な冪等キー文字列を算出する。時刻に依存しない（T2）。
+ * clientRef 指定時: `terminal:amount:sessionId:clientRef`（厳密）
+ * clientRef 未指定時: `terminal:amount:sessionId:_` （同一条件は常に同一キー）
  */
 export function computeIdempotencyKey(input: IdempotencyKeyInput): string {
-  const now = input.now ?? Date.now();
-  const windowMs = input.windowMs ?? IDEMPOTENCY_WINDOW_MS;
-  const windowId = Math.floor(now / windowMs);
-  return `${input.terminal}:${input.amount}:${input.sessionId}:${windowId}`;
+  const ref = input.clientRef && input.clientRef.length > 0 ? input.clientRef : "_";
+  return `${input.terminal}:${input.amount}:${input.sessionId}:${ref}`;
 }

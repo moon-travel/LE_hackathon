@@ -42,7 +42,7 @@ describe("Property 4: 支払いの冪等性", () => {
             terminal: "t1",
             amount,
             sessionId: session.id,
-            now: 2_000_000,
+            clientRef: "prop4",
           });
 
           const results = [];

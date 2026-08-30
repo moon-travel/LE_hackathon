@@ -8,7 +8,12 @@
 import type { AccountRequest, AccountResponse, ApiError } from "@/types/api";
 import { prisma } from "./prisma";
 import type { PrismaTx } from "./prisma";
-import { applyDelta, BalanceRangeError } from "./balance";
+import { applyDeltaAtomic } from "./balance";
+import {
+  parseTransactions,
+  stringifyTransactions,
+  type TransactionRecord,
+} from "./serde";
 import { BALANCE_MAX, CHARGE_MAX, CHARGE_MIN } from "./constants";
 import { defaultGateway, type PaymentGateway } from "@/lib/payment-mock/gateway";
 import { ulid } from "ulid";
@@ -35,6 +40,34 @@ function ok(
 
 function err(status: number, error: string, reason?: string): AccountHandlerResult {
   return { status, body: { error, reason } };
+}
+
+/**
+ * アカウント単位の取引（チャージ・払い出し・取消）を記録する。
+ * 取引履歴の格納先は Session.transactions（JSON文字列）のため、
+ * 直近のセッションに追記する。セッションが存在しない場合は記録をスキップする。
+ *
+ * 【Phase2 への申し送り】本来は Account に紐づく独立した Transaction テーブルへ
+ * 記録すべきだが、prisma/schema.prisma が凍結中のため暫定でセッションに寄せている。
+ * Phase2 で Phase0 担当へテーブル追加を依頼すること。
+ */
+async function appendAccountTransaction(
+  tx: PrismaTx,
+  accountId: string,
+  record: TransactionRecord,
+): Promise<void> {
+  const session = await tx.session.findFirst({
+    where: { accountId },
+    orderBy: { enteredAt: "desc" },
+    select: { id: true, transactions: true },
+  });
+  if (!session) return;
+  const records = parseTransactions(session.transactions);
+  records.push(record);
+  await tx.session.update({
+    where: { id: session.id },
+    data: { transactions: stringifyTransactions(records) },
+  });
 }
 
 export async function handleAccount(
@@ -69,17 +102,26 @@ export async function handleAccount(
       if (account.balance + amount > BALANCE_MAX) {
         return err(400, "balance limit exceeded", "over_max");
       }
-      try {
-        const newBalance = await client.$transaction(async (tx) =>
-          applyDelta(tx as unknown as PrismaTx, req.accountId!, amount),
-        );
-        return ok(req.accountId, newBalance, Boolean(account.cardToken));
-      } catch (e) {
-        if (e instanceof BalanceRangeError) {
-          return err(400, "balance out of range", "range");
+
+      // 【T4・要件2-2/2-3】前払いチャージは決済事業者の承認を経てから加算する。
+      // 旧実装は gateway を通さず残高を直接加算しており「決済を完了する」要件を満たしていなかった。
+      // カード登録済みならそのトークンで決済する。未登録の場合は現地現金チャージ相当として
+      // 決済を経ずに加算する（券売機での現金投入を模す。デモ既定）。
+      if (account.cardToken) {
+        const res = await gateway.charge(account.cardToken, amount);
+        if (!res.ok) {
+          // 拒否・タイムアウト時は残高不変（要件2-3）
+          return err(402, "charge declined", res.reason ?? "declined");
         }
-        throw e;
       }
+
+      const applied = await client.$transaction(async (tx) =>
+        applyDeltaAtomic(tx as unknown as PrismaTx, req.accountId!, amount),
+      );
+      if (!applied.ok) {
+        return err(400, "balance out of range", applied.reason ?? "range");
+      }
+      return ok(req.accountId, applied.balance, Boolean(account.cardToken));
     }
 
     case "registerCard": {
@@ -123,29 +165,52 @@ export async function handleAccount(
         return err(400, "no card registered", "no_card");
       }
 
-      // まず減算（補償トランザクションのため取引記録も付す）。
-      // カード返金失敗時は減算を戻す（要件12-8）。
+      // 【T3・サーガ化】外部返金は $transaction 内に入れられないため、
+      // 「減算＋取引記録(withdraw)を1トランザクションで確定」→「返金」→
+      // 「失敗時は復元＋取消記録(withdrawReverted)を1トランザクションで確定」とする。
+      // 各段が記録を残すため、途中でクラッシュしても状態を追跡・復旧できる（要件12-8）。
       const withdrawTxId = ulid();
-      const newBalance = await client.$transaction(async (tx) => {
+      const applied = await client.$transaction(async (tx) => {
         const t = tx as unknown as PrismaTx;
-        const bal = await applyDelta(t, req.accountId!, -amount);
-        return bal;
+        const r = await applyDeltaAtomic(t, req.accountId!, -amount);
+        if (!r.ok) return r;
+        await appendAccountTransaction(t, req.accountId!, {
+          transactionId: withdrawTxId,
+          kind: "withdraw",
+          amount,
+          ts: now.toISOString(),
+          balanceAfter: r.balance,
+        });
+        return r;
       });
+      if (!applied.ok) {
+        return err(400, "invalid withdraw amount", applied.reason ?? "range");
+      }
 
       if (method === "card") {
         const refund = await gateway.refund(account.cardToken!, amount);
         if (!refund.ok) {
-          // 返金失敗 → 減算した金額を残高へ復元（補償）。取引記録に未完了として残す（要件12-8）。
-          const restored = await client.$transaction(async (tx) =>
-            applyDelta(tx as unknown as PrismaTx, req.accountId!, amount),
-          );
+          // 返金失敗 → 減算を戻し、取消を記録（補償）。要件12-8。
+          const restored = await client.$transaction(async (tx) => {
+            const t = tx as unknown as PrismaTx;
+            const r = await applyDeltaAtomic(t, req.accountId!, amount);
+            if (r.ok) {
+              await appendAccountTransaction(t, req.accountId!, {
+                transactionId: ulid(),
+                kind: "withdrawReverted",
+                amount,
+                ts: new Date().toISOString(),
+                balanceAfter: r.balance,
+              });
+            }
+            return r;
+          });
           void restored;
-          void withdrawTxId;
           return err(402, "refund failed", refund.reason ?? "refund_failed");
         }
       }
 
-      return ok(req.accountId, newBalance, Boolean(account.cardToken), "withdrawn");
+      return ok(req.accountId, applied.balance, Boolean(account.cardToken), "withdrawn");
     }
 
     default:

@@ -55,7 +55,8 @@ describe("handlePay", () => {
       client: db.client,
     });
     expect(res.body.paid).toBe(false);
-    expect(res.body.reason).toBe("none");
+    // T5: 要件5-5 に従い要件9の再登録案内を含む reason を返す
+    expect(res.body.reason).toBe("none_reenroll_required");
   });
 
   it("ambiguous は paid:false reason ambiguous", async () => {
@@ -64,7 +65,8 @@ describe("handlePay", () => {
       client: db.client,
     });
     expect(res.body.paid).toBe(false);
-    expect(res.body.reason).toBe("ambiguous");
+    // T5: 要件5-7 に従い要件9の再登録案内を含む reason を返す
+    expect(res.body.reason).toBe("ambiguous_reenroll_required");
   });
 
   it("残高不足はチャージ選択肢を提示し残高不変", async () => {

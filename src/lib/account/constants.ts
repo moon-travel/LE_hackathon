@@ -20,3 +20,9 @@ export const PAY_MAX = 100000;
 
 /** 残高不足時に提示するチャージ選択肢（要件6-1）。 */
 export const CHARGE_OPTIONS: readonly number[] = [1000, 3000, 5000, 10000, 30000];
+
+/**
+ * 同一取引内でのカード決済失敗の許容回数。これに達したら以降のチャージ操作を
+ * 受け付けず、取引を成立させずに終了する（残高不変）。要件6-9。
+ */
+export const CARD_FAILURE_LIMIT = 3;

@@ -74,38 +74,43 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
 
 ### フェーズ1 — 担当A: 認証・セッション・削除（デモ背骨の中核）
 
-- [ ] 7. Auth_Service コアロジック実装 【担当: A / src/lib/auth/】
-  - [ ] 7.1 ユークリッド距離・母集団照合ロジック
+- [x] 7. Auth_Service コアロジック実装 【担当: A / src/lib/auth/】
+  - [x] 7.1 ユークリッド距離・母集団照合ロジック
     - src/lib/auth/distance.ts（128次元ユークリッド距離）, src/lib/auth/identify.ts（母集団 当日ACTIVE+当日登録 上限500、最小距離採用、閾値0.5未満件数で matched/none/ambiguous、purpose検証）
     - _Requirements: 3.2, 3.4, 3.6, 3.7, 5.1, 5.5, 5.7, 9.5, 11.2_
-  - [ ]* 7.2 Property 2: 1:N識別の件数判定整合
+  - [x]* 7.2 Property 2: 1:N識別の件数判定整合
     - **Validates: Requirements 3.4, 3.6, 3.7, 5.5, 5.7**
     - src/lib/auth/identify.property.test.ts、fast-check {numRuns:100}、タグ付与
 
-- [ ] 8. /api/auth/identify ルート実装 【担当: A / src/app/api/auth/identify/route.ts】
+- [x] 8. /api/auth/identify ルート実装 【担当: A / src/app/api/auth/identify/route.ts】
   - スタブの中身を実装、identify.ts を呼び {result,accountId?,score?} を返す。AuditLog追記（ベクトル値記録しない）は担当Cの src/lib/audit/ を型契約経由で呼ぶ
   - _Requirements: 3.1, 3.3, 3.11, 5.1, 11.2, 11.10_
 
-- [ ] 9. Session_Service（入場）実装 【担当: A / src/app/api/entry/route.ts】
-  - identify成功+当日有効入浴券でSession ACTIVE生成、既ACTIVEなら維持し開放、通過履歴昇順追記、CLOSED/FORCE_CLOSED後は入浴券判定で新セッション、各失敗分岐でセッション非生成
-  - _Requirements: 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.11, 4.1, 4.2, 4.3, 4.4, 4.6, 4.7_
+- [x] 9. Session_Service（入場）実装 【担当: A / src/app/api/entry/route.ts】
+  - [x] 9.1 入浴券台帳（凍結解除なし）
+    - src/lib/auth/bathTicket.ts: `issueBathTicket(accountId)` / `hasValidBathTicket(accountId, now)`。専用テーブルを持たず AuditLog に `eventType="BATH_TICKET_ISSUED"` を追記し、当日エントリの存在で判定する。`Pass` は用語定義上「入浴以外の有料権利」なので流用しない。src/app/api/entry/ticket/route.ts（発行=券売機での購入相当、A所有の新規ルート）。リクエスト/レスポンス型は bathTicket.ts にローカル定義し `src/types/api.ts` は変更しない
+    - _Requirements: 3.8, 4.4, 4.7_
+  - [x] 9.2 入場判定
+    - identify成功+当日有効入浴券でSession ACTIVE生成、既ACTIVEなら維持し開放、通過履歴昇順追記、CLOSED/FORCE_CLOSED後は入浴券判定で新セッション、各失敗分岐でセッション非生成。不許可理由は `reason` に `none` / `ambiguous` / `no_pass` / `timeout` を入れる（凍結 EntryResponse のコメントに合わせる）
+    - _Requirements: 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.11, 4.1, 4.2, 4.3, 4.4, 4.6, 4.7_
 
-- [ ] 10. Session_Service（退場）実装 【担当: A / src/app/api/exit/route.ts】
+- [x] 10. Session_Service（退場）実装 【担当: A / src/app/api/exit/route.ts】
   - ACTIVEをCLOSEDに更新し退場時刻記録、FaceTemplate.expireAt=退場時刻+retentionDays、ACTIVEでないアカウントの退場は不整合を監査記録・開放
-  - _Requirements: 8.1, 8.2, 8.3, 8.4_
-  - [ ]* 10.1 Property 11: 退場によるセッション遷移
+  - 要件8-3の退場時残高表示はスコープ外（凍結済み ExitResponse に balance がなく、AccountAction にも読み取り操作がないため）
+  - _Requirements: 8.1, 8.2, 8.4_
+  - [x]* 10.1 Property 11: 退場によるセッション遷移
     - **Validates: Requirements 8.1**
     - src/lib/auth/exit.property.test.ts、fast-check {numRuns:100}、タグ付与
 
-- [ ] 11. Retention_Service（同期削除・走査）実装 【担当: A / src/lib/retention/】
-  - [ ] 11.1 同期削除と走査ロジック
-    - src/lib/retention/deleteTemplate.ts（退場・同意撤回・利用者要求で即delete）, src/lib/retention/scanner.ts（setInterval 1分周期+手動発火で expireAt<=now を即削除）、ACTIVE保持中は延期、削除をAuditLog記録（内容記録しない）
+- [x] 11. Retention_Service（同期削除・走査）実装 【担当: A / src/lib/retention/】
+  - [x] 11.1 同期削除と走査ロジック
+    - src/lib/retention/deleteTemplate.ts（同意撤回・利用者削除要求で即delete。**退場は契機に含めない**。退場はタスク10の expireAt 設定のみ）, src/lib/retention/computeExpireAt.ts（退場時刻+retentionDays。CLOSED/FORCE_CLOSED両経路から呼べるよう公開）, src/lib/retention/scanner.ts（setInterval 1分周期+手動発火で expireAt<=now を即削除）、ACTIVE保持中は延期（削除要求時に expireAt=now を書き、走査側でACTIVE保持アカウントをスキップ。専用フラグは設けない）、削除をAuditLog記録（内容記録しない）
     - _Requirements: 10.4, 10.5, 10.6, 10.7, 10.8, 10.11_
-  - [ ]* 11.2 Property 12: 削除後の照合不成立
+  - [x]* 11.2 Property 12: 削除後の照合不成立
     - **Validates: Requirements 10.4, 10.7**
     - src/lib/retention/deleteTemplate.property.test.ts、fast-check {numRuns:100}、タグ付与
 
-- [ ] 12. チェックポイント（担当A）
+- [x] 12. チェックポイント（担当A）
   - 担当A範囲の全テストと tsc --noEmit が通ることを確認。問題があれば利用者に確認
 
 ### フェーズ1 — 担当B: アカウント・決済・利用権（前払いとACID）
@@ -182,9 +187,9 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - _Requirements: 11.10, 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 14.8, 14.9_
 
 - [ ] 23. 端末UI画面の骨格実装 【担当: C / src/app/(terminals)/】
-  - enroll/page.tsx（同意画面5項目表示、カメラ→ベクトル化→元画像破棄→/api/enroll）, entry/page.tsx, service/page.tsx（/api/pay,/api/pass）, exit/page.tsx, admin/page.tsx。API呼び出しは凍結型契約経由
+  - enroll/page.tsx（同意画面5項目表示、カメラ→ベクトル化→元画像破棄→/api/enroll）, entry/page.tsx, service/page.tsx（/api/pay,/api/pass）, exit/page.tsx（退場結果を表示し、「顔データを今すぐ削除」を確認操作つきで提示→/api/consent 撤回。削除が取り消せないこと・再入場には再登録が必要なことを表示。要件10-12。残高表示は要件8-3スコープ外のため行わない）, admin/page.tsx。API呼び出しは凍結型契約経由
   - 所有ファイル: src/app/(terminals)/ 配下すべて
-  - _Requirements: 1.1, 3.1, 5.1, 7.2, 8.3, 11.1, 14.2_
+  - _Requirements: 1.1, 3.1, 5.1, 7.2, 11.1, 14.2_
 
 - [ ] 24. チェックポイント（担当C）
   - 担当C範囲の全テストと tsc --noEmit が通ることを確認。問題があれば利用者に確認
@@ -196,8 +201,8 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - _Requirements: 3.2, 8.6, 10.5_
 
 - [ ] 26. デモ背骨のE2E結線確認 【担当: 統合】
-  - 入場→外出→再入場（ACTIVE維持）→別室（利用権検証）→退場（顔削除）→削除後の顔で再入場失敗、を自動テストで結線確認。src/tests/e2e-backbone.test.ts（API層で検証）
-  - _Requirements: 3.4, 4.2, 4.4, 7.3, 8.1, 10.7_
+  - 入場→外出→再入場（ACTIVE維持）→別室（利用権検証）→退場（CLOSED化+expireAt設定、この時点では顔は消えない）→利用者の削除操作で同期削除→削除後の顔で再入場失敗、を自動テストで結線確認。src/tests/e2e-backbone.test.ts（API層で検証）
+  - _Requirements: 3.4, 4.2, 4.4, 7.3, 8.1, 8.2, 10.7_
 
 - [ ] 27. 最終チェックポイント — 全プロパティ/全テスト確認 【担当: 統合】
   - Property 1〜12 の12本と全ユニット/シナリオテスト、tsc --noEmit が通ることを確認。問題があれば利用者に確認

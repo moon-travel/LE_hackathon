@@ -26,7 +26,7 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
 
 ### フェーズ0 — 共有カーネル（担当: 共有／リード1人。完了まで A/B/C はブロック）
 
-- [ ] 1. プロジェクト初期化と依存導入 【担当: 共有】
+- [x] 1. プロジェクト初期化と依存導入 【担当: 共有】
   - create-next-app（App Router, TypeScript）で LE_hackathon 直下に Next.js プロジェクトを初期化
   - 依存導入: face-api.js, @prisma/client, prisma(dev), fast-check(dev), vitest(dev), @vitejs/plugin-react(dev), ulid
   - vitest.config.ts 作成、package.json に test(vitest --run) と db:migrate(prisma migrate dev) スクリプト追加
@@ -34,7 +34,7 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - 完了条件: npm run test が0件でも正常終了し npx prisma -v が動作
   - _Requirements: 全体基盤_
 
-- [ ] 2. Prisma スキーマ確定・migrate・SQLite 初期化 【担当: 共有】（凍結対象）
+- [x] 2. Prisma スキーマ確定・migrate・SQLite 初期化 【担当: 共有】（凍結対象）
   - prisma/schema.prisma に5テーブル定義: Account / FaceTemplate / Session / Pass / AuditLog（design の Data Models どおり）
   - datasource を SQLite（file:./dev.db）に設定し prisma migrate dev --name init、prisma generate
   - 所有ファイル: prisma/schema.prisma, prisma/migrations/
@@ -42,7 +42,7 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - 完了条件: dev.db が生成され5テーブルが存在
   - _Requirements: 2.8, 8.2, 9.3, 10.9, 14.4_
 
-- [ ] 3. 共有型定義の確定 【担当: 共有】（凍結対象）
+- [x] 3. 共有型定義の確定 【担当: 共有】（凍結対象）
   - src/types/vector.ts（FaceVector=number[], VECTOR_DIM=128, ModelVersion）
   - src/types/purpose.ts（Purpose="entry"|"payment"|"pass"）
   - src/types/session.ts（SessionState="ACTIVE"|"CLOSED"|"FORCE_CLOSED"）
@@ -53,14 +53,14 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - 完了条件: tsc --noEmit が通る
   - _Requirements: 3.4, 5.2, 11.2, 13.2, 13.8_
 
-- [ ] 4. 全 API Route の型契約スタブ生成 【担当: 共有】
+- [x] 4. 全 API Route の型契約スタブ生成 【担当: 共有】
   - 各 route ファイルを作成し入出力型を用いてハンドラ署名を確定、中身は HTTP 501 を返す
   - 作成: src/app/api/auth/identify/route.ts, enroll, entry, exit, pay, pass, account, consent, admin
   - 各 route 先頭に担当（A/B/C）コメント
   - 完了条件: 各エンドポイントで501が返る
   - _Requirements: 3.3, 5.1, 11.2_
 
-- [ ] 5. face-api.js モデルプリロード/ウォームアップ雛形 【担当: 共有】
+- [x] 5. face-api.js モデルプリロード/ウォームアップ雛形 【担当: 共有】
   - src/lib/face/loadModels.ts（TinyFaceDetector+FaceLandmark68+FaceRecognition、public/models/）
   - src/lib/face/warmup.ts（ダミー推論で初回遅延回避）
   - src/lib/face/detect.ts（カメラ画像から128次元descriptor抽出し元画像バッファ破棄、要件1-7/11-4）
@@ -68,7 +68,7 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - 完了条件: モデルロード関数が import 可能で型が通る
   - _Requirements: 1.6, 1.7, 11.4_
 
-- [ ] 6. チェックポイント — フェーズ0凍結 【担当: 共有】
+- [x] 6. チェックポイント — フェーズ0凍結 【担当: 共有】
   - 全テストと tsc --noEmit が通ることを確認。問題があれば利用者に確認
   - src/types/ と prisma/schema.prisma の凍結を宣言し A/B/C へ着手通知
 

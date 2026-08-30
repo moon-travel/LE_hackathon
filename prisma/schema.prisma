@@ -1,0 +1,88 @@
+// Face-auth onsen entry MVP — data model (frozen after Phase 0).
+// 3-layer lifetime separation: FaceTemplate (short-lived) / Account (persistent) / Session (stay).
+// See .kiro/specs/face-auth-onsen-entry/design.md "Data Models".
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// 永続層: 来場者に紐づく恒久レコード。顔テンプレート保管期限とは独立 (要件2.8, 2.9)
+model Account {
+  id                 String    @id @default(cuid())
+  balance            Int       @default(0) // 0..50000 円 (要件6.5)
+  cardToken          String? // 決済事業者トークンのみ保存。カード番号等は保存しない (要件2.7)
+  retentionDays      Int       @default(7) // 基本保管期間7日 / 顧客指定1..90 (要件10.1, 10.2)
+  consentEnrollment  Boolean   @default(false) // 顔登録への同意 (要件1.4)
+  consentPayment     Boolean   @default(false) // 顔決済利用への同意 (要件1.4, 1.5)
+  consentTs          DateTime? // 同意日時（秒単位） (要件1.2)
+  consentVersion     String? // 同意画面バージョン識別子 (要件1.2)
+  autoChargeEnabled  Boolean   @default(false) // オートチャージ (要件6.3)
+  autoChargeAmount   Int? // 1000..30000
+  createdAt          DateTime  @default(now())
+
+  faceTemplates FaceTemplate[]
+  sessions      Session[]
+  passes        Pass[]
+}
+
+// テンプレート層: 1:N 識別用テンプレート。短期・自動削除。1アカウント最大5件 (要件9.3, 9.4)
+model FaceTemplate {
+  id           String    @id @default(cuid())
+  accountId    String
+  vector       String // 128次元ベクトルの永続化形式 (Template_Codec 出力, JSON文字列)。元画像は保存しない (要件1.7)
+  modelVersion String // 特徴量モデルのバージョン識別子 (要件13.8)
+  createdAt    DateTime  @default(now())
+  expireAt     DateTime? // 保管期限 = 退場時刻 + 保管期間設定 (要件8.2, 10.1)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expireAt])
+}
+
+// 滞在層: 入場から退場までの状態。ACTIVE / CLOSED / FORCE_CLOSED
+model Session {
+  id           String    @id @default(cuid())
+  accountId    String
+  state        String    @default("ACTIVE") // "ACTIVE" | "CLOSED" | "FORCE_CLOSED"
+  enteredAt    DateTime  @default(now())
+  exitedAt     DateTime?
+  passHistory  String    @default("[]") // JSON: [{ts, gate:"entry"|"exit"}] 昇順追記 (要件4.3)
+  transactions String    @default("[]") // JSON: [{ts, amount, terminal, idempotencyKey}] (要件5.2)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([state])
+}
+
+// 利用権: 別室利用権など。アカウント紐づけ、営業日終了まで有効 (要件7.1, 7.6)
+model Pass {
+  id        String   @id @default(cuid())
+  accountId String
+  status    String   @default("VALID") // "VALID" | "EXPIRED"
+  expiresAt DateTime // 購入日の営業日終了時刻
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([status])
+}
+
+// 監査層: 追記専用。update/delete API を設けない。ベクトル値は記録しない (要件11.10, 14.4)
+model AuditLog {
+  id        String   @id // ULID
+  ts        DateTime @default(now())
+  eventType String
+  accountId String?
+  detail    String   @default("{}") // JSON。ベクトル値・元画像は含めない
+
+  @@index([ts])
+  @@index([eventType])
+}

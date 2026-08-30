@@ -87,12 +87,17 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - _Requirements: 3.1, 3.3, 3.11, 5.1, 11.2, 11.10_
 
 - [ ] 9. Session_Service（入場）実装 【担当: A / src/app/api/entry/route.ts】
-  - identify成功+当日有効入浴券でSession ACTIVE生成、既ACTIVEなら維持し開放、通過履歴昇順追記、CLOSED/FORCE_CLOSED後は入浴券判定で新セッション、各失敗分岐でセッション非生成
-  - _Requirements: 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.11, 4.1, 4.2, 4.3, 4.4, 4.6, 4.7_
+  - [ ] 9.1 入浴券台帳（凍結解除なし）
+    - src/lib/auth/bathTicket.ts: `issueBathTicket(accountId)` / `hasValidBathTicket(accountId, now)`。専用テーブルを持たず AuditLog に `eventType="BATH_TICKET_ISSUED"` を追記し、当日エントリの存在で判定する。`Pass` は用語定義上「入浴以外の有料権利」なので流用しない。src/app/api/entry/ticket/route.ts（発行=券売機での購入相当、A所有の新規ルート）。リクエスト/レスポンス型は bathTicket.ts にローカル定義し `src/types/api.ts` は変更しない
+    - _Requirements: 3.8, 4.4, 4.7_
+  - [ ] 9.2 入場判定
+    - identify成功+当日有効入浴券でSession ACTIVE生成、既ACTIVEなら維持し開放、通過履歴昇順追記、CLOSED/FORCE_CLOSED後は入浴券判定で新セッション、各失敗分岐でセッション非生成。不許可理由は `reason` に `none` / `ambiguous` / `no_pass` / `timeout` を入れる（凍結 EntryResponse のコメントに合わせる）
+    - _Requirements: 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.11, 4.1, 4.2, 4.3, 4.4, 4.6, 4.7_
 
 - [ ] 10. Session_Service（退場）実装 【担当: A / src/app/api/exit/route.ts】
   - ACTIVEをCLOSEDに更新し退場時刻記録、FaceTemplate.expireAt=退場時刻+retentionDays、ACTIVEでないアカウントの退場は不整合を監査記録・開放
-  - _Requirements: 8.1, 8.2, 8.3, 8.4_
+  - 要件8-3の退場時残高表示はスコープ外（凍結済み ExitResponse に balance がなく、AccountAction にも読み取り操作がないため）
+  - _Requirements: 8.1, 8.2, 8.4_
   - [ ]* 10.1 Property 11: 退場によるセッション遷移
     - **Validates: Requirements 8.1**
     - src/lib/auth/exit.property.test.ts、fast-check {numRuns:100}、タグ付与
@@ -182,9 +187,9 @@ MVP前提: design の MVP スコープ表に従う。「後回し（可逆）」
   - _Requirements: 11.10, 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 14.8, 14.9_
 
 - [ ] 23. 端末UI画面の骨格実装 【担当: C / src/app/(terminals)/】
-  - enroll/page.tsx（同意画面5項目表示、カメラ→ベクトル化→元画像破棄→/api/enroll）, entry/page.tsx, service/page.tsx（/api/pay,/api/pass）, exit/page.tsx（残高と保管期限を表示し、「顔データを今すぐ削除」を確認操作つきで提示→/api/consent 撤回。削除が取り消せないこと・再入場には再登録が必要なことを表示。要件10-12）, admin/page.tsx。API呼び出しは凍結型契約経由
+  - enroll/page.tsx（同意画面5項目表示、カメラ→ベクトル化→元画像破棄→/api/enroll）, entry/page.tsx, service/page.tsx（/api/pay,/api/pass）, exit/page.tsx（退場結果を表示し、「顔データを今すぐ削除」を確認操作つきで提示→/api/consent 撤回。削除が取り消せないこと・再入場には再登録が必要なことを表示。要件10-12。残高表示は要件8-3スコープ外のため行わない）, admin/page.tsx。API呼び出しは凍結型契約経由
   - 所有ファイル: src/app/(terminals)/ 配下すべて
-  - _Requirements: 1.1, 3.1, 5.1, 7.2, 8.3, 11.1, 14.2_
+  - _Requirements: 1.1, 3.1, 5.1, 7.2, 11.1, 14.2_
 
 - [ ] 24. チェックポイント（担当C）
   - 担当C範囲の全テストと tsc --noEmit が通ることを確認。問題があれば利用者に確認

@@ -76,7 +76,8 @@ flowchart LR
 各APIの入出力を記述。
 
 - **Auth_Service /api/auth/identify**: 入力 `{vector:number[128], purpose:"entry"|"payment"|"pass"}`。purpose検証（3値以外400、要件11-2/11-3）。母集団構築（当日ACTIVE+当日登録、上限500、要件3-2/5-1）。各FaceTemplate（1アカウント最大5件）とユークリッド距離、アカウント単位で最小距離採用（要件9-5）。閾値0.5未満の件数で matched(1件)/none(0件)/ambiguous(2件以上)判定（要件3-6/3-7/5-5/5-7）。アクセスをAuditLog追記（ベクトル値記録しない、要件11-10）。出力 `{result, accountId?, score?}`
-- **Session_Service /api/entry /api/exit**: entryはidentify成功+当日有効な入浴券でSession ACTIVE生成、既ACTIVEなら維持し開放（要件3-9/4-1）、通過履歴追記（要件4-3）。exitはACTIVEをCLOSEDに更新し退場時刻記録、FaceTemplate.expireAt=退場時刻+retentionDays設定（要件8-1/8-2）
+- **Session_Service /api/entry /api/exit**: entryはidentify成功+当日有効な入浴券でSession ACTIVE生成、既ACTIVEなら維持し開放（要件3-9/4-1）、通過履歴追記（要件4-3）。exitはACTIVEをCLOSEDに更新し退場時刻記録、FaceTemplate.expireAt=退場時刻+retentionDays設定（要件8-1/8-2）。退場時の残高表示は要件8-3スコープ外
+- **入浴券（要件3-8/4-4/4-7）**: `Pass`（=利用権。用語定義上「入浴以外の有料権利」）とは別概念のため流用しない。専用テーブルを持たず `AuditLog` を追記専用の入場権台帳として用いる。当日有効な入浴券の有無 = 当該アカウントの当日 `eventType="BATH_TICKET_ISSUED"` エントリの存在。発行は A所有の `POST /api/entry/ticket`（券売機での購入相当）。登録（`/api/enroll`）では自動発行しない。登録済みかつ券なしの状態を作れることで要件3-8の拒否分岐が到達可能になる
 - **Account_Service /api/pay ほか**: 残高減算はPrisma $transactionで残高チェック→減算→取引記録を原子的に（要件5-2/5-9）。冪等キー=(terminal,amount,sessionId,時刻窓)で重複要求に最初の結果（要件5-6）。残高0〜50000円制約（要件6-5）
 - **Retention_Service**: 同期削除（本体）=同意撤回・利用者削除要求の時点で該当FaceTemplate即delete（要件10-7）。**退場は削除の契機ではない**。退場時は `expireAt=退場時刻+retentionDays` を設定するだけで（要件8-2）、削除は期限到来か利用者要求のいずれかで起きる。退場即削除にすると保管期間（要件10-1: 既定7日 / 10-2: 顧客指定1〜90日）が常に0日になり要件を満たせないため。走査（保険）=setInterval デモ1分周期でexpireAt<=nowを即削除（要件10-4/10-5）。ACTIVE保持中の削除要求はセッション終了まで延期（要件10-8）。延期は削除要求時に `expireAt=now` を書き、走査側でACTIVE保持アカウントをスキップする形で実現し、専用フラグは設けない
 - **Consent_Service /api/consent**: 登録同意・決済同意を独立2項目記録（要件1-4）、撤回時は同期削除で「顔を消す→同じ顔で入場失敗」を実演可能に（要件1-12/10-7）。デモ背骨の「顔が消える」はこの経路。退場画面から確認操作つきで呼ぶ（要件10-12）
@@ -264,6 +265,8 @@ sequenceDiagram
 - 母集団はデモで登録者3〜5名固定し1:N単純化
 - 監査ログ改ざん耐性はアプリ層追記限定（ローカルSQLite、将来QLDB相当）
 - 方式B採用のため「ベクトルが端末外に出ない」は完全には満たさない。方式Aを将来構想に明記
+- 要件8-3（退場ゲートで残高を10秒以上表示）はスコープ外。凍結済みの `ExitResponse` に `balance` がなく、`AccountAction` にも残高読み取り操作がないため、凍結解除なしでは実現経路がない。退場は `released` / `sessionState` / `exitedAt` の表示のみとする
+- 入浴券（要件3-8/4-4/4-7）は専用テーブルを持たない。`Pass` は用語定義上「入浴以外の有料権利」であり流用できないため、`AuditLog` を追記専用の入場権台帳として用いる（`eventType="BATH_TICKET_ISSUED"`）。判定・発行は `src/lib/auth/bathTicket.ts` に隠蔽し、将来テーブル化する際は同ファイルの差し替えのみで済む形にする
 
 ## MVP スコープ表
 
@@ -273,5 +276,5 @@ sequenceDiagram
 | 実装（必須・監査指摘） | 残高ACID・二重減算防止(5-6, 5-9) |
 | 一部実装 | 残高不足→チャージ提示(6) / 認証失敗→再登録誘導(9) / 監査一覧(14) |
 | モック | 決済事業者連携(2 チャージ・カード, 6 カード決済, 12 返金) |
-| 後回し（可逆） | 本人確認(9, 11, 12 は簡易PIN) / 残高払い出しUI(12) |
+| 後回し（可逆） | 本人確認(9, 11, 12 は簡易PIN) / 残高払い出しUI(12) / 退場ゲートでの残高表示(8-3) |
 | 設計のみ | 目的別アクセス制御の厳密化(11) / 監査ログ改ざん耐性強化(14) |

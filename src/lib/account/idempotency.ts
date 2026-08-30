@@ -8,9 +8,16 @@
 //
 // clientRef は呼び出し側（端末）が発行する一意 ID。これがあるとき冪等性は厳密になる。
 // 型契約 src/types/api.ts（PayRequest）は凍結でフィールド追加できないため、
-// clientRef 未指定時は時刻に依存しないフォールバックキーを用い、
-// 重複判定は「同一セッション内の同一(terminal,amount)取引の存在」を取引履歴ベースで行う
-// （charge.ts の recentDuplicateWindowMs による直近判定に委譲）。
+// clientRef 未指定時は時刻に依存しないフォールバックキーを用いる。
+//
+// キー自体は時刻非依存だが、**重複と判定する範囲**は charge.ts が
+// IDEMPOTENCY_WINDOW_MS（既定60秒）の時間窓で絞る。これにより
+//  - 窓境界で別キー化して二重減算する旧バグは発生せず
+//  - 同一条件の「正当な2回目の支払い」は窓を過ぎれば通る（取り逃しを防ぐ）
+// の両方を満たす（要件5-6）。
+
+/** 重複と判定する時間窓（ミリ秒）。要件5-6 は60秒。charge.ts が既定値として用いる。 */
+export const IDEMPOTENCY_WINDOW_MS = 60_000;
 
 export interface IdempotencyKeyInput {
   terminal: string;

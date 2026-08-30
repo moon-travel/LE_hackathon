@@ -161,9 +161,13 @@ export async function handlePay(
       eventType: "payment_identify_none",
       detail: { terminal: req.terminal, amount: req.amount },
     });
+    // reason は凍結契約に列挙された値（"none"）を維持する。
+    // 要件9の再登録案内は reenrollRequired フラグで併記し、他担当の分岐を壊さない。
     return {
       status: 200,
-      body: { paid: false, reason: "none_reenroll_required" },
+      body: { paid: false, reason: "none", reenrollRequired: true } as PayResponse & {
+        reenrollRequired: boolean;
+      },
     };
   }
   if (idResult.result === "ambiguous") {
@@ -174,7 +178,9 @@ export async function handlePay(
     });
     return {
       status: 200,
-      body: { paid: false, reason: "ambiguous_reenroll_required" },
+      body: { paid: false, reason: "ambiguous", reenrollRequired: true } as PayResponse & {
+        reenrollRequired: boolean;
+      },
     };
   }
   const accountId = idResult.accountId;
@@ -185,7 +191,9 @@ export async function handlePay(
     });
     return {
       status: 200,
-      body: { paid: false, reason: "none_reenroll_required" },
+      body: { paid: false, reason: "none", reenrollRequired: true } as PayResponse & {
+        reenrollRequired: boolean;
+      },
     };
   }
 
@@ -297,6 +305,25 @@ export async function handlePay(
         balance: result.balance,
         reason: "insufficient",
         chargeOptions: [...CHARGE_OPTIONS],
+      },
+    };
+  }
+
+  // 【最終監査の修正】競合を検出したが既存取引を特定できない場合（conflict）は、
+  // 減算も記録もされていないため支払い成立として返してはならない。再試行を促す。
+  if (result.outcome === "conflict") {
+    await audit.record({
+      eventType: "payment_conflict",
+      accountId,
+      detail: { amount: req.amount, terminal: req.terminal },
+    });
+    return {
+      status: 200,
+      body: {
+        paid: false,
+        accountId,
+        balance: result.balance,
+        reason: "conflict_retry_required",
       },
     };
   }

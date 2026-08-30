@@ -15,6 +15,7 @@ import { ulid } from "ulid";
 import { prisma } from "./prisma";
 import type { PrismaTx } from "./prisma";
 import { applyDeltaAtomic } from "./balance";
+import { IDEMPOTENCY_WINDOW_MS } from "./idempotency";
 import {
   parseTransactions,
   stringifyTransactions,
@@ -34,8 +35,14 @@ export class DuplicateChargeError extends Error {
   }
 }
 
-/** chargeAtomic の結果種別。 */
-export type ChargeOutcome = "paid" | "insufficient" | "duplicate";
+/**
+ * chargeAtomic の結果種別。
+ * - paid: 減算成立
+ * - insufficient: 残高不足（減算なし）
+ * - duplicate: 同一冪等キーの既存取引あり（減算なし。既存の取引結果を返す）
+ * - conflict: 競合を検出したが既存取引を特定できなかった（減算なし。支払い成立と扱ってはならない）
+ */
+export type ChargeOutcome = "paid" | "insufficient" | "duplicate" | "conflict";
 
 export interface ChargeResult {
   outcome: ChargeOutcome;
@@ -56,6 +63,12 @@ export interface ChargeInput {
   idempotencyKey: string;
   /** 取引日時（省略時 new Date()）。 */
   now?: Date;
+  /**
+   * 重複と判定する時間窓（ミリ秒）。既定 IDEMPOTENCY_WINDOW_MS（60秒、要件5-6）。
+   * この窓より古い同一キー取引は重複とみなさない（＝正当な2回目の支払いは通る）。
+   * clientRef 由来の厳密キーを使う場合は Infinity を指定して無期限にできる。
+   */
+  duplicateWindowMs?: number;
 }
 
 /**
@@ -106,9 +119,15 @@ export async function chargeInTx(
   }
 
   const records = parseTransactions(session.transactions);
+  const windowMs = input.duplicateWindowMs ?? IDEMPOTENCY_WINDOW_MS;
 
   // (1) 既存の同一冪等キー取引があれば duplicate（正味減算0、要件5-6）
-  const existing = findByIdempotencyKey(records, input.idempotencyKey);
+  const existing = findByIdempotencyKey(
+    records,
+    input.idempotencyKey,
+    now,
+    windowMs,
+  );
   if (existing) {
     const bal = await readBalance(tx, input.accountId);
     return {
@@ -135,7 +154,7 @@ export async function chargeInTx(
     select: { transactions: true },
   });
   const freshRecords = parseTransactions(fresh?.transactions);
-  if (findByIdempotencyKey(freshRecords, input.idempotencyKey)) {
+  if (findByIdempotencyKey(freshRecords, input.idempotencyKey, now, windowMs)) {
     // (4) 競合により重複が生じた → 例外で $transaction をロールバックし減算も戻す
     throw new DuplicateChargeError(input.idempotencyKey);
   }
@@ -159,14 +178,28 @@ export async function chargeInTx(
   return { outcome: "paid", balance: applied.balance, transactionId };
 }
 
-/** 取引履歴から同一冪等キーの支払い取引を探す。 */
+/**
+ * 取引履歴から同一冪等キーの支払い取引を探す。
+ *
+ * 【最終監査の修正】時間窓を導入する。旧実装は履歴全体を無期限に検索していたため、
+ * 同一セッション・同一端末・同一金額の「正当な2回目の支払い」が永久に重複扱いとなり、
+ * 減算されないまま成功が返る取り逃しが発生していた（要件5-6 の60秒窓から乖離）。
+ * windowMs 以内の同一キー取引のみを重複とみなす。
+ */
 function findByIdempotencyKey(
   records: TransactionRecord[],
   idempotencyKey: string,
+  now: Date,
+  windowMs: number,
 ): TransactionRecord | undefined {
-  return records.find(
-    (t) => t.kind === "pay" && t.idempotencyKey === idempotencyKey,
-  );
+  const nowMs = now.getTime();
+  return records.find((t) => {
+    if (t.kind !== "pay" || t.idempotencyKey !== idempotencyKey) return false;
+    if (!Number.isFinite(windowMs)) return true; // 無期限指定
+    const ts = Date.parse(t.ts);
+    if (Number.isNaN(ts)) return true; // 日時不明は安全側（重複とみなす）
+    return nowMs - ts <= windowMs;
+  });
 }
 
 /** 表示用に現在残高を読む（判定には用いない）。 */
@@ -205,10 +238,16 @@ export async function chargeAtomic(
         where: { id: input.accountId },
         select: { balance: true },
       });
+      // 【最終監査の修正】existing を特定できない場合に duplicate を返すと、
+      // 呼び出し側が「支払い成立」に変換して減算も記録もないまま成功を表示してしまう。
+      // 既存取引を提示できないなら duplicate と断定せず conflict として返す。
+      if (!existing) {
+        return { outcome: "conflict", balance: account?.balance ?? 0 };
+      }
       return {
         outcome: "duplicate",
         balance: account?.balance ?? 0,
-        transactionId: existing?.transactionId,
+        transactionId: existing.transactionId,
         existing,
       };
     }

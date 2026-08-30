@@ -16,6 +16,8 @@ import {
 import { businessDayRange } from "./businessDay";
 import { isSupportedModelVersion } from "./modelVersion";
 import { AuditEvent, appendAudit } from "./audit";
+// 担当C の Template_Codec。テンプレートの永続化形式を復号する唯一の経路（要件13-2）。
+import { decodeTemplate } from "@/lib/codec";
 
 /** 識別要求の受付から判定を返すまでの上限。要件9-5（1.5秒以内）に合わせる。 */
 export const IDENTIFY_TIMEOUT_MS = 1500;
@@ -200,13 +202,27 @@ export async function buildPopulation(
   return population;
 }
 
-/** SQLite に JSON 文字列で保存されたベクトルを復元する。壊れていれば null。 */
+/**
+ * SQLite に文字列で保存されたテンプレートからベクトルを復元する。壊れていれば null。
+ *
+ * 保存形式は担当C の Template_Codec が決める永続化形式（凍結契約 EncodedTemplateShape =
+ * `{ version, vector }` の JSON 文字列）なので、まず decodeTemplate で復元する。
+ *
+ * codec 導入前に書かれた「素の 128 次元配列」の行も読めるようフォールバックを残す。
+ * ここを封筒形式だけにすると、旧形式の行が黙って母集団から落ちて「登録したのに認証できない」
+ * という切り分けの難しい失敗になるため。
+ */
 function safeParseVector(raw: string): FaceVector | null {
   try {
-    const parsed: unknown = JSON.parse(raw);
-    return isValidVector(parsed) ? parsed : null;
+    return decodeTemplate(raw).vector;
   } catch {
-    return null;
+    // 旧形式（素の配列）フォールバック。
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return isValidVector(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
   }
 }
 

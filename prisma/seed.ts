@@ -4,7 +4,7 @@
 import { PrismaClient } from "@prisma/client";
 import { encodeTemplate } from "../src/lib/codec/encode";
 import { personVector } from "../src/lib/face/demoVectors";
-import { CURRENT_MODEL_VERSION } from "../src/types/vector";
+import { CURRENT_MODEL_VERSION } from "../src/lib/auth/modelVersion";
 
 const prisma = new PrismaClient();
 

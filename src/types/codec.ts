@@ -1,44 +1,42 @@
-// Template_Codec persisted-form types (frozen after Phase 0). Requirements 13.2, 13.4, 13.6, 13.8.
+// 【凍結対象】共有型: 顔特徴量テンプレートの永続化形式（Template_Codec）。要件13 対応。
+// encode: FaceVector + ModelVersion -> 永続化形式（JSON 文字列）
+// decode: 永続化形式 -> FaceVector + ModelVersion
+// バージョン識別子を復元可能な形で含める（要件13-8）。エンコードは決定的（要件13-5）。
 
 import type { FaceVector, ModelVersion } from "./vector";
 
-/**
- * The persisted form of a face template. Encoded to a UTF-8 JSON string whose
- * byte length must be within [1, 65536] (要件13.4, 13.6).
- */
-export interface EncodedTemplate {
-  /** Format version of the persisted envelope itself (distinct from modelVersion). */
-  v: number;
-  /** Feature-model version identifier, restorable on decode (要件13.8). */
+/** 符号化前の論理テンプレート（メモリ表現）。 */
+export interface FaceTemplatePlain {
+  /** 128 次元の有限数値配列。 */
+  vector: FaceVector;
+  /** 特徴量モデルのバージョン識別子。 */
   modelVersion: ModelVersion;
-  /** The 128-dim vector. */
+}
+
+/**
+ * 永続化形式データ。JSON 文字列として保存される。
+ * 制約: バイト長は 1 バイト以上 65536 バイト以下（要件13-4/13-6）。
+ * 0 バイト / 65536 超 / バージョン欠落 / 構造不適合はデコード時に拒否する。
+ */
+export type EncodedTemplate = string;
+
+/** 永続化形式の下限バイト長（含む）。要件13-4/13-6。 */
+export const ENCODED_MIN_BYTES = 1;
+
+/** 永続化形式の上限バイト長（含む）。要件13-4/13-6。 */
+export const ENCODED_MAX_BYTES = 65536;
+
+/**
+ * 永続化形式の JSON 構造（EncodedTemplate をパースした形）。
+ * version はバージョン識別子（欠落は不正、要件13-6）。
+ */
+export interface EncodedTemplateShape {
+  version: ModelVersion;
   vector: FaceVector;
 }
 
-/** Lower/upper byte-length bounds for a valid persisted form (要件13.4, 13.6). */
-export const MIN_ENCODED_BYTES = 1;
-export const MAX_ENCODED_BYTES = 65536;
-
-/** Current envelope format version. */
-export const ENVELOPE_VERSION = 1;
-
-/** Result of a decode operation (要件13.2). */
+/** デコード結果。復元テンプレートとバージョン識別子（要件13-2）。 */
 export interface DecodeResult {
   vector: FaceVector;
   modelVersion: ModelVersion;
-}
-
-/** Error thrown/returned on invalid persisted form. Carries no vector data (要件13.7). */
-export class CodecError extends Error {
-  constructor(
-    public readonly reason:
-      | "empty"
-      | "too_large"
-      | "missing_version"
-      | "malformed"
-      | "invalid_vector",
-  ) {
-    super(`codec error: ${reason}`);
-    this.name = "CodecError";
-  }
 }

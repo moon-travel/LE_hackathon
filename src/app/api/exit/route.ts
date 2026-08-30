@@ -1,80 +1,98 @@
-// 担当A — Session_Service (退場). POST /api/exit
-// Requirements 8.1, 8.2, 8.3, 8.4.
-import { NextResponse } from "next/server";
-import type { ExitRequest, ExitResponse } from "@/types/api";
-import type { PassEvent } from "@/types/session";
-import { isValidFaceVector } from "@/types/vector";
-import { prisma } from "@/lib/db";
-import { identify } from "@/lib/auth/identify";
-import { buildPopulation } from "@/lib/auth/population";
-import { closeSessionAndScheduleRetention } from "@/lib/auth/exit";
-import { appendAudit } from "@/lib/audit/log";
+// 担当: A — Session_Service /api/exit（退場）。
+// 型契約は src/types/api.ts（凍結）。
+// _Requirements: 8.1, 8.2, 8.4_
+//
+// 要件8-3（退場ゲートでの残高表示）はスコープ外。凍結済みの ExitResponse に balance がなく、
+// AccountAction にも残高読み取り操作がないため、凍結解除なしでは実現経路がない。
+//
+// 退場は Session の CLOSED 化と expireAt 設定のみ。**テンプレートの削除はしない**。
+// デモの「顔が消える」は退場画面からの明示的な削除操作（/api/consent の撤回）で行う。
 
-async function handleExit(accountId: string): Promise<ExitResponse> {
+import { NextResponse } from "next/server";
+import type { ApiError, ExitRequest, ExitResponse } from "@/types/api";
+import { prisma } from "@/lib/db";
+import { IdentifyTimeoutError, identify } from "@/lib/auth/identify";
+import { statusOf, toApiError } from "@/lib/auth/apiError";
+import { AuditEvent, appendAudit } from "@/lib/auth/audit";
+import { appendPassage, parsePassHistory, toSecondPrecision } from "@/lib/auth/session";
+import { setRetentionDeadline } from "@/lib/retention/deleteTemplate";
+import { DEFAULT_RETENTION_DAYS } from "@/lib/retention/computeExpireAt";
+
+export async function POST(request: Request): Promise<NextResponse<ExitResponse | ApiError>> {
+  const body = (await request.json().catch(() => ({}))) as Partial<ExitRequest>;
+  const now = new Date();
+
+  let decision;
+  try {
+    decision = await identify(body.vector, body.purpose ?? "entry", now);
+  } catch (error) {
+    if (error instanceof IdentifyTimeoutError) {
+      return NextResponse.json({ released: false, reason: "timeout" });
+    }
+    return NextResponse.json(toApiError(error), { status: statusOf(error) });
+  }
+
+  // 要件8-5: 識別できない場合はゲートを閉鎖したまま維持し、未識別の退場試行を監査記録する。
+  if (decision.result !== "matched" || decision.accountId === undefined) {
+    await appendAudit({
+      eventType: AuditEvent.EXIT_UNIDENTIFIED,
+      ts: now,
+      detail: { result: decision.result, populationSize: decision.populationSize },
+    });
+    return NextResponse.json({ released: false, reason: decision.result });
+  }
+  const accountId = decision.accountId;
+
   const active = await prisma.session.findFirst({
     where: { accountId, state: "ACTIVE" },
+    orderBy: { enteredAt: "desc" },
   });
-  const account = await prisma.account.findUnique({ where: { id: accountId } });
-  const balance = account?.balance ?? 0;
 
-  if (!active) {
-    // No ACTIVE session: open anyway, log inconsistency (要件8.4).
-    const last = await prisma.session.findFirst({
+  // 要件8-4: ACTIVE セッションがない場合もゲートは開ける。状態は一切変更せず、
+  // セッション不整合として監査記録する（閉じ込め防止を優先する要件の裁定）。
+  if (active === null) {
+    const latest = await prisma.session.findFirst({
       where: { accountId },
       orderBy: { enteredAt: "desc" },
-      select: { state: true },
+      select: { id: true, state: true },
     });
-    await appendAudit(
-      "session_inconsistency",
-      { location: "exit", lastState: last?.state ?? "none" },
+    await appendAudit({
+      eventType: AuditEvent.SESSION_INCONSISTENCY,
       accountId,
-    );
-    return { result: "no_active_session", accountId, gateOpen: true, balance };
+      ts: now,
+      detail: {
+        identifiedAt: toSecondPrecision(now).toISOString(),
+        latestSessionId: latest?.id ?? null,
+        latestSessionState: latest?.state ?? null,
+      },
+    });
+    return NextResponse.json({ released: true, accountId });
   }
 
-  const now = new Date();
-  const history: PassEvent[] = JSON.parse(active.passHistory);
-  history.push({ ts: now.toISOString(), gate: "exit" });
+  // 要件8-1: 状態を CLOSED に更新し、識別時刻を秒精度の退場時刻として記録する。
+  const exitedAt = toSecondPrecision(now);
+  const history = appendPassage(parsePassHistory(active.passHistory), "EXIT", now);
+  await prisma.session.update({
+    where: { id: active.id },
+    data: { state: "CLOSED", exitedAt, passHistory: JSON.stringify(history) },
+  });
 
-  await closeSessionAndScheduleRetention(active.id, accountId, now, history, "CLOSED");
-
-  await appendAudit("session_exit", { sessionId: active.id }, accountId);
-  return { result: "exited", accountId, sessionId: active.id, gateOpen: true, balance };
-}
-
-export async function POST(
-  req: Request,
-): Promise<NextResponse<ExitResponse | { error: string }>> {
-  let body: Partial<ExitRequest>;
-  try {
-    body = (await req.json()) as Partial<ExitRequest>;
-  } catch {
-    return NextResponse.json({ error: "invalid json" }, { status: 400 });
-  }
-
-  if (body.manualAccountId) {
-    const acct = await prisma.account.findUnique({ where: { id: body.manualAccountId } });
-    if (!acct) return NextResponse.json({ error: "account not found" }, { status: 404 });
-    return NextResponse.json(await handleExit(body.manualAccountId));
-  }
-
-  if (!isValidFaceVector(body.vector)) {
-    return NextResponse.json({ error: "invalid vector" }, { status: 400 });
-  }
-
-  const population = await buildPopulation("active");
-  const outcome = identify(body.vector, "entry", population);
-
-  await appendAudit(
-    "identify",
-    { purpose: "entry", location: "exit", result: outcome.result },
-    outcome.accountId,
+  // 要件8-2: 保管期間設定を退場時刻に加算した日時を保管期限として算定し保持する。削除はしない。
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { retentionDays: true },
+  });
+  await setRetentionDeadline(
+    accountId,
+    exitedAt,
+    account?.retentionDays ?? DEFAULT_RETENTION_DAYS,
   );
 
-  if (outcome.result !== "matched" || !outcome.accountId) {
-    await appendAudit("unidentified_exit", { reason: outcome.result });
-    return NextResponse.json({ result: "auth_failed", gateOpen: false });
-  }
-
-  return NextResponse.json(await handleExit(outcome.accountId));
+  return NextResponse.json({
+    released: true,
+    sessionId: active.id,
+    accountId,
+    sessionState: "CLOSED",
+    exitedAt: exitedAt.toISOString(),
+  });
 }

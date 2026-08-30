@@ -1,219 +1,269 @@
-// API request/response contracts (frozen after Phase 0).
-// Maps to design.md "Components and Interfaces". All terminal UIs and API routes
-// integrate through these types only.
+// 【凍結対象】共有型: 全 API のリクエスト/レスポンス型契約。
+// design.md「Components and Interfaces」に厳密対応。A/B/C はこの契約経由でのみ結合する。
+// この型は凍結後、原則変更禁止。変更はフェーズ0担当に一元依頼すること。
 
 import type { FaceVector } from "./vector";
 import type { Purpose } from "./purpose";
 import type { SessionState } from "./session";
 
-// ── Auth_Service: POST /api/auth/identify ─────────────────────────────
+// ============================================================================
+// 共通
+// ============================================================================
+
+/** API 共通のエラー応答。 */
+export interface ApiError {
+  error: string;
+  /** 目的外利用など拒否事由の区分（任意）。 */
+  reason?: string;
+}
+
+/** 1:N 識別の判定結果。閾値未満件数に対応（要件3-6/3-7/5-5/5-7）。 */
+export type IdentifyResult = "matched" | "none" | "ambiguous";
+
+// ============================================================================
+// Auth_Service — POST /api/auth/identify （担当A）
+// ============================================================================
+
 export interface IdentifyRequest {
-  vector: FaceVector; // number[128]
+  vector: FaceVector;
   purpose: Purpose;
 }
 
-export type IdentifyResult = "matched" | "none" | "ambiguous";
-
 export interface IdentifyResponse {
   result: IdentifyResult;
-  accountId?: string; // present only when result === "matched"
-  score?: number; // euclidean distance of the matched account (smaller = closer)
+  /** result==="matched" のときのみ設定。 */
+  accountId?: string;
+  /** 採用された最小距離ベースのスコア（任意）。 */
+  score?: number;
 }
 
-// ── Session_Service: POST /api/entry ──────────────────────────────────
+// ============================================================================
+// Enroll — POST /api/enroll （担当C）
+// ============================================================================
+
+export interface EnrollRequest {
+  /** ブラウザ内 face-api.js で算出した 128 次元ベクトル（元画像は送らない、要件1-7/11-4）。 */
+  vector: FaceVector;
+  modelVersion: string;
+  /** 顔登録同意（要件1-4）。 */
+  consentEnrollment: boolean;
+  /** 顔決済利用同意（要件1-4）。 */
+  consentPayment: boolean;
+  /** 同意画面バージョン識別子（要件1-2）。 */
+  consentVersion: string;
+  /** 顧客指定保管期間 1〜90 日（任意、要件10-2）。 */
+  retentionDays?: number;
+  /** 再登録時の既存アカウント（本人確認後、要件9-1/9-2）。 */
+  accountId?: string;
+}
+
+export interface EnrollResponse {
+  accountId: string;
+  templateId: string;
+  /** 保管中テンプレート件数（最大5件、要件9-3）。 */
+  templateCount: number;
+}
+
+// ============================================================================
+// Session_Service — POST /api/entry （担当A）
+// ============================================================================
+
 export interface EntryRequest {
   vector: FaceVector;
-  purpose: "entry";
-  manualAccountId?: string; // 係員手動開放 (要件3.12)
+  purpose: Purpose; // "entry"
 }
-
-export type EntryResult =
-  | "entered" // new ACTIVE session created
-  | "reentered" // existing ACTIVE session kept, gate opened (要件3.9, 4.2)
-  | "no_pass" // identified but no valid bathing ticket (要件3.8)
-  | "auth_failed" // none matched (要件3.6)
-  | "ambiguous" // 2+ matched (要件3.7)
-  | "timeout"; // identify exceeded 2s (要件3.11)
 
 export interface EntryResponse {
-  result: EntryResult;
-  accountId?: string;
+  /** 入場を許可しゲート開放するか。 */
+  admitted: boolean;
+  /** 生成または維持された滞在セッション識別子（許可時）。 */
   sessionId?: string;
-  gateOpen: boolean;
+  accountId?: string;
+  sessionState?: SessionState;
+  /** 不許可時の理由区分（none / ambiguous / no_pass / timeout など）。 */
+  reason?: string;
 }
 
-// ── Session_Service: POST /api/exit ───────────────────────────────────
+// ============================================================================
+// Session_Service — POST /api/exit （担当A）
+// ============================================================================
+
 export interface ExitRequest {
   vector: FaceVector;
-  purpose: "entry"; // exit gate reuses entry-purpose identification
-  manualAccountId?: string;
+  purpose: Purpose; // "entry"（退場ゲートも顔照合）
 }
-
-export type ExitResult =
-  | "exited" // ACTIVE -> CLOSED, exit time recorded, expireAt set (要件8.1, 8.2)
-  | "no_active_session" // opened, inconsistency logged (要件8.4)
-  | "auth_failed"; // could not identify (要件8.5)
 
 export interface ExitResponse {
-  result: ExitResult;
-  accountId?: string;
+  /** ゲート開放するか。 */
+  released: boolean;
   sessionId?: string;
-  gateOpen: boolean;
-  balance?: number; // shown at exit gate (要件8.3)
+  accountId?: string;
+  /** 退場後のセッション状態（通常 "CLOSED"）。 */
+  sessionState?: SessionState;
+  /** 退場時刻（ISO文字列）。 */
+  exitedAt?: string;
+  reason?: string;
 }
 
-// ── Account_Service: POST /api/pay ────────────────────────────────────
+// ============================================================================
+// Account_Service — POST /api/pay （担当B）
+// ============================================================================
+
 export interface PayRequest {
   vector: FaceVector;
-  purpose: "payment";
-  amount: number; // 1..100000 円 (要件5.1)
-  terminal: string; // 設置窓口
-  sessionId?: string; // idempotency scope (要件5.6)
+  purpose: Purpose; // "payment"
+  /** 支払い金額 1〜100000 円（要件5-1）。 */
+  amount: number;
+  /** 設置窓口識別子。冪等キーの一部（要件5-6）。 */
+  terminal: string;
+  /** 冪等キー算出用（同一セッション対象、要件5-6）。 */
+  sessionId?: string;
 }
-
-export type PayResult =
-  | "paid"
-  | "insufficient" // balance < amount -> charge flow (要件5.8, 6.1)
-  | "auth_failed" // none (要件5.5)
-  | "ambiguous" // 2+ (要件5.7)
-  | "failed"; // transaction rollback (要件5.9)
 
 export interface PayResponse {
-  result: PayResult;
+  /** 支払い成立か。 */
+  paid: boolean;
   accountId?: string;
-  balance?: number; // post-deduction balance (要件5.3)
-  amount?: number;
-  shortfall?: number; // when insufficient (要件6.1)
+  /** 減算後残高。 */
+  balance?: number;
+  /** 取引識別子。 */
+  transactionId?: string;
+  /** 不成立の理由（none / ambiguous / insufficient / declined など）。 */
+  reason?: string;
+  /** 残高不足時のチャージ選択肢（要件6-1）。 */
+  chargeOptions?: number[];
 }
 
-// ── Account_Service: POST /api/account ────────────────────────────────
-export type AccountAction =
-  | "create"
-  | "charge"
-  | "registerCard"
-  | "payout"
-  | "setAutoCharge"
-  | "get";
+// ============================================================================
+// Account_Service — POST /api/account （担当B）
+// ============================================================================
+
+/** 操作種別: 生成 / チャージ / カードトークン保存 / 払い出し。 */
+export type AccountAction = "create" | "charge" | "registerCard" | "withdraw";
 
 export interface AccountRequest {
   action: AccountAction;
   accountId?: string;
-  amount?: number; // charge / payout amount
-  cardToken?: string; // for registerCard mock result
-  autoChargeEnabled?: boolean;
-  autoChargeAmount?: number;
-  payoutMethod?: "card" | "cash";
-  retentionDays?: number; // 顧客指定保管期間 1..90 (要件10.2)
+  /** charge / withdraw の金額。 */
+  amount?: number;
+  /** registerCard のトークン（決済事業者発行）。 */
+  cardToken?: string;
+  /** withdraw の方法（"card" | "cash"）。 */
+  withdrawMethod?: "card" | "cash";
 }
 
 export interface AccountResponse {
-  ok: boolean;
-  accountId?: string;
-  balance?: number;
-  cardRegistered?: boolean;
+  accountId: string;
+  balance: number;
+  hasCard: boolean;
+  /** 削除保留などの状態メッセージ（任意）。 */
   message?: string;
-  error?: string;
 }
 
-// ── Account_Service: POST /api/pass ───────────────────────────────────
+// ============================================================================
+// Account_Service — POST /api/pass （担当B）
+// ============================================================================
+
+/** 操作種別: 発行 / 検証。 */
 export type PassAction = "issue" | "verify";
 
 export interface PassRequest {
   action: PassAction;
-  accountId?: string; // for issue
-  vector?: FaceVector; // for verify (via identify)
-  purpose?: "pass";
+  accountId: string;
 }
 
 export interface PassResponse {
-  ok: boolean;
-  valid?: boolean; // verify result (要件7.2)
+  /** 有効な利用権が存在するか（verify）。 */
+  valid: boolean;
   passId?: string;
+  /** 有効期間終了時刻（ISO文字列）。 */
   expiresAt?: string;
-  alreadyExists?: boolean; // 既存有効利用権あり (要件7.7)
-  error?: string;
+  /** 既存有効利用権があり新規発行しなかった場合 true（要件7-7）。 */
+  alreadyExists?: boolean;
 }
 
-// ── Consent_Service: POST /api/consent ────────────────────────────────
+// ============================================================================
+// Consent_Service — POST /api/consent （担当C）
+// ============================================================================
+
+/** 操作種別: 記録 / 撤回。 */
 export type ConsentAction = "record" | "revoke";
 
 export interface ConsentRequest {
   action: ConsentAction;
-  accountId?: string; // revoke / update existing
-  consentEnrollment: boolean; // 顔登録への同意 (要件1.4)
-  consentPayment: boolean; // 顔決済利用への同意 (要件1.4)
-  consentVersion?: string; // 同意画面バージョン (要件1.2)
+  accountId: string;
+  /** record 時: 顔登録同意（要件1-4）。 */
+  consentEnrollment?: boolean;
+  /** record 時: 顔決済利用同意（要件1-4）。 */
+  consentPayment?: boolean;
+  /** record 時: 同意画面バージョン識別子。 */
+  consentVersion?: string;
 }
 
 export interface ConsentResponse {
-  ok: boolean;
-  accountId?: string;
-  consentEnrollment?: boolean;
-  consentPayment?: boolean;
-  consentTs?: string;
-  deletedTemplates?: number; // on revoke (要件1.12, 10.7)
-  error?: string;
-}
-
-// ── Enrollment: POST /api/enroll ──────────────────────────────────────
-export interface EnrollRequest {
-  vector: FaceVector; // browser-computed; raw image never sent (要件1.7, 11.4)
-  accountId?: string; // present for re-enrollment (追加登録, 要件9.2)
+  accountId: string;
   consentEnrollment: boolean;
   consentPayment: boolean;
-  consentVersion?: string;
-  retentionDays?: number; // 顧客指定保管期間 (要件10.2)
+  /** 同意/撤回日時（ISO文字列、秒単位）。 */
+  consentTs?: string;
+  /** 撤回に伴いテンプレートを同期削除したか（要件1-12/10-7）。 */
+  templatesDeleted?: boolean;
 }
 
-export interface EnrollResponse {
-  ok: boolean;
-  accountId?: string;
-  templateId?: string;
-  templateCount?: number; // <= 5 (要件9.3)
-  evictedOldest?: boolean; // 6件目で最古削除 (要件9.4)
-  balance?: number;
-  error?: string;
-}
+// ============================================================================
+// Admin_Console — GET/POST /api/admin （担当C）
+// ============================================================================
 
-// ── Admin_Console: GET/POST /api/admin ────────────────────────────────
-export interface ActiveSessionView {
+/** ACTIVE セッションの一覧項目。 */
+export interface AdminSessionItem {
   sessionId: string;
   accountId: string;
   enteredAt: string;
-  passHistory: { ts: string; gate: "entry" | "exit" }[]; // latest 20 (要件14.2)
+  /** 通過履歴（最新20件、要件14-2）。 */
+  passHistory: unknown[];
   balance: number;
+  /** 有効な利用権の有無。 */
   hasValidPass: boolean;
 }
 
-export interface AuditLogView {
+/** 監査ログの一覧項目。 */
+export interface AdminAuditItem {
   id: string;
   ts: string;
   eventType: string;
   accountId?: string;
-  detail: Record<string, unknown>; // never contains vector values (要件11.10, 14.4)
+  detail: unknown;
 }
 
-export interface AdminSnapshot {
+export interface AdminGetResponse {
+  /** ACTIVE セッション件数（要件14-1）。 */
   activeCount: number;
-  populationCap: number;
-  nearCapacity: boolean; // >= 90% (要件14.6)
-  atCapacity: boolean; // == cap (要件14.7)
-  activeSessions: ActiveSessionView[];
-  auditLog: AuditLogView[]; // descending, <= 1000 (要件14.3)
+  /** 識別対象母集団上限（500）。 */
+  capacity: number;
+  sessions: AdminSessionItem[];
+  /** 監査ログ降順・最大1000件（要件14-3）。 */
+  auditLogs: AdminAuditItem[];
+  /** 上限90%接近警告（要件14-6）。 */
+  nearCapacityWarning: boolean;
+  /** 上限到達警告（要件14-7）。 */
+  atCapacityWarning: boolean;
 }
 
-export type AdminAction = "snapshot" | "forceClose" | "runRetentionScan";
+/** 管理操作種別: セッション強制クローズ / 削除走査の手動発火 等。 */
+export type AdminAction = "forceClose" | "runRetentionScan";
 
-export interface AdminRequest {
+export interface AdminActionRequest {
   action: AdminAction;
-  sessionId?: string; // for forceClose
-  operatorId?: string; // 操作者識別子 (要件14.5)
+  /** forceClose 対象セッション。 */
+  sessionId?: string;
+  /** 操作者識別子（監査記録、要件14-5）。 */
+  operatorId: string;
 }
 
-export interface AdminResponse {
+export interface AdminActionResponse {
   ok: boolean;
-  snapshot?: AdminSnapshot;
-  newState?: SessionState;
-  deletedTemplates?: number; // retention scan result
-  error?: string;
+  /** 遷移後のセッション状態（forceClose 時）。 */
+  sessionState?: SessionState;
+  /** 走査で削除したテンプレート件数（runRetentionScan 時）。 */
+  deletedCount?: number;
 }

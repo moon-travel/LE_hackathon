@@ -1,57 +1,88 @@
-// 担当A — Retention_Service synchronous deletion.
-// Requirements 10.4, 10.6, 10.7, 10.8, 10.11.
-// The BODY of deletion is synchronous: on exit / consent withdrawal / user
-// request, matching FaceTemplates are deleted immediately. If the account still
-// has an ACTIVE session, deletion is deferred until the session closes (要件10.8).
-import { prisma } from "@/lib/db";
-import { appendAudit } from "@/lib/audit/log";
+// Retention_Service: 同期削除（本体）と保管期限の設定。
+// _Requirements: 1.12, 8.2, 8.8, 10.6, 10.7, 10.8, 10.9, 10.11_
+//
+// 削除の契機は「保管期限の到来（scanner.ts）」と「利用者の削除要求・同意撤回（本ファイル）」の
+// 2つだけ。**退場は削除の契機ではない**。退場時は setExpireAtForAccount で保管期限を置くだけで、
+// 実際の削除は期限到来か利用者要求のいずれかで起きる。
+// 退場即削除にすると expireAt が無意味になり、保管期間（要件10-1: 既定7日 / 10-2: 顧客指定
+// 1〜90日）が常に0日になって要件を満たせないため（docs/design/A-auth-session-retention.md 7.1節）。
 
-export type DeleteTrigger = "exit" | "consent_revoke" | "user_request" | "expiry";
+import { AuditEvent, prismaRetentionStore } from "./store";
+import type { DeletionTrigger, RetentionStore } from "./store";
+import { computeExpireAt } from "./computeExpireAt";
 
 export interface DeleteResult {
-  deleted: number;
-  deferred: boolean; // true when an ACTIVE session blocks deletion (要件10.8)
+  /** 実際に削除したテンプレート件数。 */
+  deletedCount: number;
+  /**
+   * ACTIVE セッション保持中のため削除を延期したか（要件10-8）。
+   * 延期時は expireAt = now を書き込み、セッション終了後の走査で削除される。
+   */
+  deferred: boolean;
 }
 
 /**
- * Synchronously delete all FaceTemplates for an account.
- * - If the account has an ACTIVE session and `respectActiveSession` is true,
- *   defer (return deferred:true, delete nothing) (要件10.8).
- * - Records a template_delete audit entry WITHOUT template contents (要件10.6).
+ * 当該アカウントの顔特徴量テンプレートを同期削除する（要件10-7 / 1-12）。
+ *
+ * ACTIVE セッションが存在する場合は削除せず、`expireAt = now` を書き込んで延期する（要件10-8）。
+ * 走査側は ACTIVE 保持アカウントをスキップするため、CLOSED / FORCE_CLOSED 遷移後の最初の走査で
+ * 削除される。専用の delete-pending フラグを持たないのは、凍結スキーマを変更しないための設計
+ * （docs/design/A-auth-session-retention.md 5.3節）。
+ *
+ * 削除対象は FaceTemplate のみ。残高・カードトークン・利用権・取引記録は削除対象に含めない
+ * （要件2-9 / 10-9）。
  */
 export async function deleteTemplatesForAccount(
   accountId: string,
-  trigger: DeleteTrigger,
-  respectActiveSession = true,
+  trigger: DeletionTrigger,
+  store: RetentionStore = prismaRetentionStore,
+  now: Date = new Date(),
 ): Promise<DeleteResult> {
-  if (respectActiveSession) {
-    const active = await prisma.session.findFirst({
-      where: { accountId, state: "ACTIVE" },
-      select: { id: true },
-    });
-    if (active) {
-      return { deleted: 0, deferred: true };
-    }
+  const templates = await store.listTemplatesByAccount(accountId);
+  if (templates.length === 0) {
+    return { deletedCount: 0, deferred: false };
   }
 
-  const result = await prisma.faceTemplate.deleteMany({ where: { accountId } });
-  if (result.count > 0) {
-    await appendAudit("template_delete", { trigger, count: result.count }, accountId);
+  if (await store.hasActiveSession(accountId)) {
+    // 要件10-8: ACTIVE セッションが終了するまで削除を延期する。
+    await store.setExpireAtForAccount(accountId, now);
+    await store.appendAudit({
+      eventType: AuditEvent.TEMPLATE_DELETED,
+      accountId,
+      ts: now,
+      detail: {
+        trigger,
+        deferred: true,
+        message: "ACTIVE セッション保持中のため削除を延期。セッション終了後に削除される",
+      },
+    });
+    return { deletedCount: 0, deferred: true };
   }
-  return { deleted: result.count, deferred: false };
+
+  const deletedCount = await store.deleteTemplatesByIds(templates.map((t) => t.id));
+
+  // 要件10-6: 削除日時・対象アカウント識別子・削除の契機を記録し、テンプレートの内容は記録しない。
+  await store.appendAudit({
+    eventType: AuditEvent.TEMPLATE_DELETED,
+    accountId,
+    ts: now,
+    detail: { trigger, deletedCount, deferred: false },
+  });
+
+  return { deletedCount, deferred: false };
 }
 
 /**
- * Delete a single template by id (used by the 6th-template eviction path is
- * handled in enroll; this is for targeted retention). Records audit.
+ * 退場（または強制クローズ）に伴い保管期限を設定する（要件8-2 / 8-8）。
+ * **削除はしない。** 期限を置くだけ。
  */
-export async function deleteTemplateById(
-  templateId: string,
-  trigger: DeleteTrigger,
-): Promise<boolean> {
-  const tpl = await prisma.faceTemplate.findUnique({ where: { id: templateId } });
-  if (!tpl) return false;
-  await prisma.faceTemplate.delete({ where: { id: templateId } });
-  await appendAudit("template_delete", { trigger, templateId }, tpl.accountId);
-  return true;
+export async function setRetentionDeadline(
+  accountId: string,
+  exitedAt: Date,
+  retentionDays: number,
+  store: RetentionStore = prismaRetentionStore,
+): Promise<{ expireAt: Date; updatedCount: number }> {
+  const expireAt = computeExpireAt(exitedAt, retentionDays);
+  const updatedCount = await store.setExpireAtForAccount(accountId, expireAt);
+  return { expireAt, updatedCount };
 }

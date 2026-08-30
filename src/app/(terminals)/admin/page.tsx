@@ -2,16 +2,20 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { AdminResponse, AdminSnapshot } from "@/types/api";
+import type {
+  AdminGetResponse,
+  AdminActionResponse,
+  ApiError,
+} from "@/types/api";
 
 export default function AdminPage() {
-  const [snap, setSnap] = useState<AdminSnapshot | null>(null);
+  const [snap, setSnap] = useState<AdminGetResponse | null>(null);
   const [msg, setMsg] = useState("");
 
   const refresh = useCallback(async () => {
     const res = await fetch("/api/admin", { method: "GET" });
-    const data = (await res.json()) as AdminResponse;
-    if (data.ok && data.snapshot) setSnap(data.snapshot);
+    if (!res.ok) return;
+    setSnap((await res.json()) as AdminGetResponse);
   }, []);
 
   // Refresh active count every 5s (要件14.1).
@@ -27,8 +31,11 @@ export default function AdminPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "forceClose", sessionId, operatorId: "admin-ui" }),
     });
-    const data = (await res.json()) as AdminResponse;
-    setMsg(data.ok ? `強制クローズしました (${sessionId})` : `失敗: ${data.error}`);
+    if (res.ok) {
+      setMsg(`強制クローズしました (${sessionId})`);
+    } else {
+      setMsg(`失敗: ${((await res.json()) as ApiError).error}`);
+    }
     refresh();
   }
 
@@ -36,10 +43,14 @@ export default function AdminPage() {
     const res = await fetch("/api/admin", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "runRetentionScan" }),
+      body: JSON.stringify({ action: "runRetentionScan", operatorId: "admin-ui" }),
     });
-    const data = (await res.json()) as AdminResponse;
-    setMsg(`削除走査: ${data.deletedTemplates ?? 0} 件削除`);
+    if (res.ok) {
+      const data = (await res.json()) as AdminActionResponse;
+      setMsg(`削除走査: ${data.deletedCount ?? 0} 件削除`);
+    } else {
+      setMsg(`失敗: ${((await res.json()) as ApiError).error}`);
+    }
     refresh();
   }
 
@@ -49,9 +60,9 @@ export default function AdminPage() {
       {snap && (
         <>
           <p>
-            滞在中: <strong>{snap.activeCount}</strong> / {snap.populationCap}
-            {snap.atCapacity && <span style={{ color: "crimson" }}> ⚠ 上限到達（介入が必要）</span>}
-            {!snap.atCapacity && snap.nearCapacity && (
+            滞在中: <strong>{snap.activeCount}</strong> / {snap.capacity}
+            {snap.atCapacityWarning && <span style={{ color: "crimson" }}> ⚠ 上限到達（介入が必要）</span>}
+            {!snap.atCapacityWarning && snap.nearCapacityWarning && (
               <span style={{ color: "darkorange" }}> ⚠ 上限接近</span>
             )}
           </p>
@@ -70,7 +81,7 @@ export default function AdminPage() {
               </tr>
             </thead>
             <tbody>
-              {snap.activeSessions.map((s) => (
+              {snap.sessions.map((s) => (
                 <tr key={s.sessionId} style={{ borderTop: "1px solid #eee" }}>
                   <td>{new Date(s.enteredAt).toLocaleTimeString()}</td>
                   <td style={{ textAlign: "center" }}>{s.balance}</td>
@@ -86,7 +97,7 @@ export default function AdminPage() {
 
           <h2 style={{ fontSize: "1rem" }}>監査ログ（新しい順）</h2>
           <ul style={{ fontSize: ".75rem", color: "#444", maxHeight: 240, overflow: "auto" }}>
-            {snap.auditLog.slice(0, 100).map((l) => (
+            {snap.auditLogs.slice(0, 100).map((l) => (
               <li key={l.id}>
                 {new Date(l.ts).toLocaleTimeString()} [{l.eventType}]{" "}
                 {l.accountId ? `acct=${l.accountId.slice(0, 6)} ` : ""}

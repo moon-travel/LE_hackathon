@@ -1,93 +1,80 @@
-// 担当A — Session_Service (入場). POST /api/entry
-// Requirements 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.11, 3.12, 4.1, 4.2, 4.3, 4.4, 4.6, 4.7.
-import { NextResponse } from "next/server";
-import type { EntryRequest, EntryResponse } from "@/types/api";
-import type { PassEvent } from "@/types/session";
-import { isValidFaceVector } from "@/types/vector";
-import { prisma } from "@/lib/db";
-import { identify } from "@/lib/auth/identify";
-import { buildPopulation } from "@/lib/auth/population";
-import { hasValidPass } from "@/lib/auth/tickets";
-import { appendAudit } from "@/lib/audit/log";
+// 担当: A — Session_Service /api/entry（入場・再入場）。
+// 型契約は src/types/api.ts（凍結）。
+// _Requirements: 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.11, 4.1, 4.2, 4.3, 4.4, 4.6, 4.7_
 
-async function openForAccount(accountId: string, manual: boolean): Promise<EntryResponse> {
-  // Bathing ticket check (要件3.8 / 4.4 / 4.7).
-  if (!(await hasValidPass(accountId))) {
-    return { result: "no_pass", accountId, gateOpen: false };
+import { NextResponse } from "next/server";
+import type { ApiError, EntryRequest, EntryResponse } from "@/types/api";
+import { prisma } from "@/lib/db";
+import { IdentifyTimeoutError, identify } from "@/lib/auth/identify";
+import { statusOf, toApiError } from "@/lib/auth/apiError";
+import { hasValidBathTicket } from "@/lib/auth/bathTicket";
+import { appendPassage, newSession, parsePassHistory, toSecondPrecision } from "@/lib/auth/session";
+
+export async function POST(request: Request): Promise<NextResponse<EntryResponse | ApiError>> {
+  const body = (await request.json().catch(() => ({}))) as Partial<EntryRequest>;
+  const now = new Date();
+
+  let decision;
+  try {
+    decision = await identify(body.vector, body.purpose ?? "entry", now);
+  } catch (error) {
+    if (error instanceof IdentifyTimeoutError) {
+      // 要件3-11: 識別要求を無効として扱い、ゲートを開けずセッションを生成しない。
+      // ゲート端末は理由を表示する必要があるので、エラーではなく in-band で返す。
+      return NextResponse.json({ admitted: false, reason: "timeout" });
+    }
+    return NextResponse.json(toApiError(error), { status: statusOf(error) });
   }
 
-  const now = new Date();
-  const existing = await prisma.session.findFirst({
+  // 要件3-6 / 3-7: 0件は認証失敗、2件以上は係員対応。いずれもセッションを生成しない。
+  // 要件4-6: 識別不成立でも再試行回数は制限しない。
+  if (decision.result !== "matched" || decision.accountId === undefined) {
+    return NextResponse.json({ admitted: false, reason: decision.result });
+  }
+  const accountId = decision.accountId;
+
+  // 要件3-8 / 4-7: 当日有効な入浴券がなければ入場させず、セッションも生成しない。
+  if (!(await hasValidBathTicket(accountId, now))) {
+    return NextResponse.json({ admitted: false, accountId, reason: "no_pass" });
+  }
+
+  // 要件3-9 / 4-1 / 4-2: 既存 ACTIVE セッションがあれば新規生成せず維持したまま開放する。
+  const active = await prisma.session.findFirst({
     where: { accountId, state: "ACTIVE" },
+    orderBy: { enteredAt: "desc" },
   });
 
-  if (existing) {
-    // Already ACTIVE: keep it, just record the crossing and open (要件3.9, 4.1, 4.2).
-    const history: PassEvent[] = JSON.parse(existing.passHistory);
-    history.push({ ts: now.toISOString(), gate: "entry", manual });
+  if (active !== null) {
+    // 要件4-3: 通過履歴を時刻昇順で追記。件数に上限を設けない。
+    const history = appendPassage(parsePassHistory(active.passHistory), "ENTRY", now);
     await prisma.session.update({
-      where: { id: existing.id },
+      where: { id: active.id },
       data: { passHistory: JSON.stringify(history) },
     });
-    await appendAudit("session_entry", { sessionId: existing.id, reentry: true, manual }, accountId);
-    return { result: "reentered", accountId, sessionId: existing.id, gateOpen: true };
+    return NextResponse.json({
+      admitted: true,
+      sessionId: active.id,
+      accountId,
+      sessionState: "ACTIVE",
+    });
   }
 
-  // New ACTIVE session (要件3.4 / 4.4).
-  const history: PassEvent[] = [{ ts: now.toISOString(), gate: "entry", manual }];
-  const session = await prisma.session.create({
+  // 要件3-4 / 4-4: 初回、または CLOSED / FORCE_CLOSED 後の再入場は新規セッションを ACTIVE で生成。
+  const seed = newSession(now);
+  const created = await prisma.session.create({
     data: {
       accountId,
       state: "ACTIVE",
-      enteredAt: now,
-      passHistory: JSON.stringify(history),
+      enteredAt: toSecondPrecision(now),
+      passHistory: JSON.stringify(seed.passHistory),
       transactions: "[]",
     },
   });
-  await appendAudit("session_entry", { sessionId: session.id, reentry: false, manual }, accountId);
-  return { result: "entered", accountId, sessionId: session.id, gateOpen: true };
-}
 
-export async function POST(
-  req: Request,
-): Promise<NextResponse<EntryResponse | { error: string }>> {
-  let body: Partial<EntryRequest>;
-  try {
-    body = (await req.json()) as Partial<EntryRequest>;
-  } catch {
-    return NextResponse.json({ error: "invalid json" }, { status: 400 });
-  }
-
-  // Manual staff override: open for a specified account (要件3.12).
-  if (body.manualAccountId) {
-    const acct = await prisma.account.findUnique({ where: { id: body.manualAccountId } });
-    if (!acct) return NextResponse.json({ error: "account not found" }, { status: 404 });
-    const out = await openForAccount(body.manualAccountId, true);
-    return NextResponse.json(out);
-  }
-
-  if (!isValidFaceVector(body.vector)) {
-    return NextResponse.json({ error: "invalid vector" }, { status: 400 });
-  }
-
-  const population = await buildPopulation("entry");
-  const outcome = identify(body.vector, "entry", population);
-
-  await appendAudit(
-    "identify",
-    { purpose: "entry", result: outcome.result, populationSize: population.length },
-    outcome.accountId,
-  );
-
-  if (outcome.result === "none") {
-    await appendAudit("auth_failure", { location: "entry", reason: "none" });
-    return NextResponse.json({ result: "auth_failed", gateOpen: false });
-  }
-  if (outcome.result === "ambiguous") {
-    await appendAudit("auth_failure", { location: "entry", reason: "ambiguous" });
-    return NextResponse.json({ result: "ambiguous", gateOpen: false });
-  }
-
-  const out = await openForAccount(outcome.accountId!, false);
-  return NextResponse.json(out);
+  return NextResponse.json({
+    admitted: true,
+    sessionId: created.id,
+    accountId,
+    sessionState: "ACTIVE",
+  });
 }

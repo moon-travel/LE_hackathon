@@ -9,10 +9,10 @@
     "lint": "next lint",
     "test": "vitest --run --passWithNoTests",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "typecheck": "tsc --noEmit"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -20,27 +20,20 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "face-api.js": "^0.22.2",
-    "next": "^14.2.5",
+    "next": "^14.2.15",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "ulid": "^2.3.0"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
-    "@types/react": "^18.3.3",
+    "@types/node": "^20.16.11",
+    "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "fast-check": "^3.19.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "fast-check": "^3.22.0",
     "prisma": "^5.22.0",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.3",
-    "vitest": "^2.0.5"
-  },
-  "allowScripts": {
-    "@prisma/client@5.22.0": true,
-    "prisma@5.22.0": true,
-    "@prisma/engines@5.22.0": true,
-    "esbuild@0.28.2": true,
-    "esbuild@0.21.5": true
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
   }
 }

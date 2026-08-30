@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
   title: "顔認証温泉入場・前払い決済システム",
-  description: "Face-auth onsen entry and prepaid payment MVP",
+  description: "Face-auth onsen entry & prepaid payment (local MVP)",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

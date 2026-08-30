@@ -1,52 +1,88 @@
 // Feature: face-auth-onsen-entry, Property 4: 支払いの冪等性
 // Validates: Requirements 5.6
-// For any number of identical-key requests, net deduction is one and exactly one
-// transaction is recorded; 2nd+ requests return the first result.
-import { describe, it, expect } from "vitest";
+//
+// For any 同一冪等キーの支払い要求を任意回数受けても、正味減算は1回・取引は1件で、
+// 2回目以降は最初の結果を返す。
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { applyDeduction, type PureState } from "./charge";
-import { BALANCE_MAX } from "./balance";
+import { chargeAtomic } from "./charge";
+import { parseTransactions } from "./serde";
+import { computeIdempotencyKey } from "./idempotency";
+import { createTestDb, clearAll, type TestDb } from "./testdb";
 
-const balanceArb = fc.integer({ min: 0, max: BALANCE_MAX });
-const amountArb = fc.integer({ min: 1, max: BALANCE_MAX });
-const repeatsArb = fc.integer({ min: 1, max: 6 });
+let db: TestDb;
 
-describe("Property 4: payment idempotency", () => {
-  it("repeated same-key requests net a single deduction and single tx", () => {
-    fc.assert(
-      fc.property(balanceArb, amountArb, repeatsArb, (balance, amount, repeats) => {
-        // Only meaningful when the first payment can succeed.
-        fc.pre(amount <= balance);
+beforeAll(async () => {
+  db = await createTestDb();
+});
 
-        const key = "same-key";
-        const at = new Date().toISOString();
-        let state: PureState = { balance, transactions: [] };
-        const firstTxSnapshot = { balance: 0, txCount: 0 };
+afterAll(async () => {
+  await db.dispose();
+});
 
-        for (let i = 0; i < repeats; i++) {
-          const { next, outcome } = applyDeduction(state, {
-            amount,
-            terminal: "t",
-            idempotencyKey: key,
-            at,
+beforeEach(async () => {
+  await clearAll(db.client);
+});
+
+describe("Property 4: 支払いの冪等性", () => {
+  it("同一冪等キーを任意回数受けても正味減算1回・取引1件・2回目以降は最初の結果", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        // 残高は必ず支払える範囲にして「本来なら減算される」状況を作る
+        fc.integer({ min: 1, max: 30_000 }), // amount
+        fc.integer({ min: 2, max: 8 }), // 繰り返し回数
+        async (amount, repeats) => {
+          await clearAll(db.client);
+          const balance = 50_000;
+          const account = await db.client.account.create({ data: { balance } });
+          const session = await db.client.session.create({
+            data: { accountId: account.id, state: "ACTIVE" },
           });
-          state = next;
-          if (i === 0) {
-            expect(outcome.result).toBe("paid");
-            firstTxSnapshot.balance = outcome.result === "paid" ? outcome.balance : -1;
-            firstTxSnapshot.txCount = state.transactions.length;
-          } else {
-            // Replay: returns the first result, no new deduction.
-            expect(outcome.result).toBe("paid");
-            if (outcome.result === "paid") expect(outcome.replayed).toBe(true);
-          }
-        }
+          const idempotencyKey = computeIdempotencyKey({
+            terminal: "t1",
+            amount,
+            sessionId: session.id,
+            clientRef: "prop4",
+          });
 
-        // Net effect: exactly one deduction, exactly one transaction.
-        expect(state.balance).toBe(balance - amount);
-        expect(state.transactions).toHaveLength(1);
-        expect(state.transactions[0].idempotencyKey).toBe(key);
-      }),
+          const results = [];
+          for (let i = 0; i < repeats; i++) {
+            results.push(
+              await chargeAtomic(
+                {
+                  accountId: account.id,
+                  sessionId: session.id,
+                  amount,
+                  terminal: "t1",
+                  idempotencyKey,
+                },
+                db.client,
+              ),
+            );
+          }
+
+          const after = await db.client.account.findUniqueOrThrow({
+            where: { id: account.id },
+          });
+          const afterSession = await db.client.session.findUniqueOrThrow({
+            where: { id: session.id },
+          });
+          const records = parseTransactions(afterSession.transactions);
+
+          // 正味減算はちょうど1回分
+          expect(after.balance).toBe(balance - amount);
+          // 取引は1件のみ
+          expect(records).toHaveLength(1);
+          // 1回目は paid、2回目以降は duplicate かつ最初の transactionId を返す
+          expect(results[0].outcome).toBe("paid");
+          const firstTxId = results[0].transactionId;
+          for (let i = 1; i < repeats; i++) {
+            expect(results[i].outcome).toBe("duplicate");
+            expect(results[i].transactionId).toBe(firstTxId);
+            expect(results[i].balance).toBe(balance - amount);
+          }
+        },
+      ),
       { numRuns: 100 },
     );
   });

@@ -1,6 +1,6 @@
-// Face-auth onsen entry MVP — data model (frozen after Phase 0).
-// 3-layer lifetime separation: FaceTemplate (short-lived) / Account (persistent) / Session (stay).
-// See .kiro/specs/face-auth-onsen-entry/design.md "Data Models".
+// 顔認証温泉入場・前払い決済システム — Prisma スキーマ
+// 【凍結対象】フェーズ0で確定後は原則変更禁止。変更はフェーズ0担当に一元依頼すること。
+// design.md「Data Models」に厳密対応。SQLite + Prisma。データ寿命3層分離をテーブル分割で表現。
 
 generator client {
   provider = "prisma-client-js"
@@ -11,77 +11,87 @@ datasource db {
   url      = "file:./dev.db"
 }
 
-// 永続層: 来場者に紐づく恒久レコード。顔テンプレート保管期限とは独立 (要件2.8, 2.9)
+// 注記（SQLite 制約）: SQLite コネクタは Prisma の Json スカラ型を非対応。
+// design.md が Json とする列（FaceTemplate.vector, Session.passHistory,
+// Session.transactions, AuditLog.detail）は String（JSON文字列を格納）で表現する。
+// アプリ層で JSON.stringify / JSON.parse を行い、論理的な型は src/types/ の定義に従う。
+
+// アカウント（永続層）: 顧客が削除するまで永続。要件2, 12。
 model Account {
-  id                 String    @id @default(cuid())
-  balance            Int       @default(0) // 0..50000 円 (要件6.5)
-  cardToken          String? // 決済事業者トークンのみ保存。カード番号等は保存しない (要件2.7)
-  retentionDays      Int       @default(7) // 基本保管期間7日 / 顧客指定1..90 (要件10.1, 10.2)
-  consentEnrollment  Boolean   @default(false) // 顔登録への同意 (要件1.4)
-  consentPayment     Boolean   @default(false) // 顔決済利用への同意 (要件1.4, 1.5)
-  consentTs          DateTime? // 同意日時（秒単位） (要件1.2)
-  consentVersion     String? // 同意画面バージョン識別子 (要件1.2)
-  autoChargeEnabled  Boolean   @default(false) // オートチャージ (要件6.3)
-  autoChargeAmount   Int? // 1000..30000
-  createdAt          DateTime  @default(now())
+  id                String    @id @default(cuid())
+  balance           Int       @default(0) // 0〜50000円制約（要件6-5）。アプリ層で範囲検証
+  cardToken         String? // 決済事業者トークン（カード番号等は保存しない、要件2-7）
+  retentionDays     Int       @default(7) // 保管期間設定。基本7日、顧客指定1〜90日（要件10）
+  consentEnrollment Boolean   @default(false) // 顔登録同意（要件1-4）
+  consentPayment    Boolean   @default(false) // 顔決済利用同意（要件1-4）
+  consentTs         DateTime? // 同意日時（秒単位、要件1-2）
+  consentVersion    String? // 同意画面バージョン識別子（要件1-2）
+  autoChargeEnabled Boolean   @default(false) // オートチャージ有効（要件6-3）
+  autoChargeAmount  Int? // オートチャージ金額 1000〜30000（要件6-3）
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   faceTemplates FaceTemplate[]
   sessions      Session[]
   passes        Pass[]
 }
 
-// テンプレート層: 1:N 識別用テンプレート。短期・自動削除。1アカウント最大5件 (要件9.3, 9.4)
+// 顔特徴量テンプレート（テンプレート層）: 短期・自動削除。1アカウント最大5件（要件9-3/9-4）。
+// 元画像は保存しない（要件1-7）。ベクトル値は外部インターフェースへ出力しない（要件11）。
 model FaceTemplate {
   id           String    @id @default(cuid())
   accountId    String
-  vector       String // 128次元ベクトルの永続化形式 (Template_Codec 出力, JSON文字列)。元画像は保存しない (要件1.7)
-  modelVersion String // 特徴量モデルのバージョン識別子 (要件13.8)
+  vector       String // JSON文字列: 128次元 number[]（VECTOR_DIM=128）。SQLite制約でString
+  modelVersion String // 特徴量モデルのバージョン識別子（要件13-8）
   createdAt    DateTime  @default(now())
-  expireAt     DateTime? // 保管期限 = 退場時刻 + 保管期間設定 (要件8.2, 10.1)
+  expireAt     DateTime? // 保管期限。退場時刻 + retentionDays（要件8-2/10）
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id])
 
   @@index([accountId])
   @@index([expireAt])
 }
 
-// 滞在層: 入場から退場までの状態。ACTIVE / CLOSED / FORCE_CLOSED
+// 滞在セッション（滞在層）: 入場から退場まで。退場ゲート通過で終了。
+// state は SQLite が enum 非対応のため String。許容値: "ACTIVE" | "CLOSED" | "FORCE_CLOSED"
+// （src/types/session.ts の SessionState と対応。アプリ層で制約）
 model Session {
   id           String    @id @default(cuid())
   accountId    String
   state        String    @default("ACTIVE") // "ACTIVE" | "CLOSED" | "FORCE_CLOSED"
-  enteredAt    DateTime  @default(now())
-  exitedAt     DateTime?
-  passHistory  String    @default("[]") // JSON: [{ts, gate:"entry"|"exit"}] 昇順追記 (要件4.3)
-  transactions String    @default("[]") // JSON: [{ts, amount, terminal, idempotencyKey}] (要件5.2)
+  enteredAt    DateTime  @default(now()) // 入場時刻（秒精度、要件3-4）
+  exitedAt     DateTime? // 退場時刻（要件8-1）
+  passHistory  String    @default("[]") // JSON文字列: 通過履歴（時刻昇順、要件4-3）。SQLite制約でString
+  transactions String    @default("[]") // JSON文字列: 取引記録（要件5-2）。SQLite制約でString
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id])
 
   @@index([accountId])
   @@index([state])
 }
 
-// 利用権: 別室利用権など。アカウント紐づけ、営業日終了まで有効 (要件7.1, 7.6)
+// 利用権（別室利用権など）: アカウントに紐づく。営業日単位の有効期間（要件7）。
 model Pass {
   id        String   @id @default(cuid())
   accountId String
-  status    String   @default("VALID") // "VALID" | "EXPIRED"
-  expiresAt DateTime // 購入日の営業日終了時刻
+  expiresAt DateTime // 有効期間の終了時刻 = 購入日の営業日終了時刻（要件7-1）
+  status    String   @default("VALID") // "VALID" | "EXPIRED"（要件7-5）
   createdAt DateTime @default(now())
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id])
 
   @@index([accountId])
   @@index([status])
 }
 
-// 監査層: 追記専用。update/delete API を設けない。ベクトル値は記録しない (要件11.10, 14.4)
+// 監査ログ（監査層・追記専用）: update/delete API を設けず追記のみ（要件14-4）。
+// ベクトル値は記録しない（要件11-10/14-4）。id は ULID 文字列。
 model AuditLog {
-  id        String   @id // ULID
+  id        String   @id // ULID 文字列（アプリ層で ulid() 採番）
   ts        DateTime @default(now())
-  eventType String
-  accountId String?
-  detail    String   @default("{}") // JSON。ベクトル値・元画像は含めない
+  eventType String // 事象種別（認証失敗 / セッション不整合 / 強制クローズ / 決済拒否 / 削除 等）
+  accountId String? // 対象アカウント識別子（任意）
+  detail    String   @default("{}") // JSON文字列: 事象詳細（ベクトル値は含めない）。SQLite制約でString
 
   @@index([ts])
   @@index([eventType])

@@ -1,35 +1,24 @@
-// 担当: 共有 — face-api.js warmup. Runs one dummy inference so the first real
-// capture doesn't pay the model init cost (design 割り切り: 初回数秒回避).
-"use client";
+// 【共有カーネル雛形】face-api.js ウォームアップ。
+// 初回推論はモデル初期化で数百ms〜数秒かかる。ダミー画像で一度推論し初回遅延を回避する。
+// design「割り切りとリスク」: 起動時プリロード + ダミー推論でウォームアップ。
 
-import { loadModels, faceapi } from "./loadModels";
-
-let warmed = false;
+import * as faceapi from "face-api.js";
+import { loadModels, isModelsLoaded } from "./loadModels";
 
 /**
- * Ensure models are loaded and run a single throwaway inference on a blank
- * canvas. Idempotent.
+ * ダミー入力で一度推論を走らせ、モデルを温める。
+ * モデル未ロードなら先にロードする。ブラウザ環境でのみ呼び出すこと。
  */
 export async function warmup(): Promise<void> {
-  if (warmed) return;
-  await loadModels();
-
+  if (!isModelsLoaded()) {
+    await loadModels();
+  }
+  // 小さなダミー canvas で1回推論し初回遅延を吸収する。
   const canvas = document.createElement("canvas");
-  canvas.width = 160;
-  canvas.height = 160;
-  const ctx = canvas.getContext("2d");
-  if (ctx) {
-    ctx.fillStyle = "#808080";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-
-  try {
-    await faceapi
-      .detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions())
-      .withFaceLandmarks()
-      .withFaceDescriptor();
-  } catch {
-    // Blank canvas may yield no face; the point is to init the graph, not to detect.
-  }
-  warmed = true;
+  canvas.width = 128;
+  canvas.height = 128;
+  await faceapi
+    .detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions())
+    .withFaceLandmarks()
+    .withFaceDescriptor();
 }

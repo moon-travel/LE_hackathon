@@ -1,22 +1,25 @@
-// 担当C — Exit_Gate UI. Requirements 8.1, 8.3.
+// 担当C — Exit_Gate UI. _Requirements: 8.1, 8.5_
+//
+// 応答は凍結契約 ExitResponse（released + exitedAt + reason）に従って解釈する。
+// 退場は削除の契機ではなく、保管期限の設定契機である（要件8-2 / 10-1）。
 "use client";
 
 import { useState } from "react";
 import { useCamera } from "../useCamera";
-import { captureDescriptorFromVideo } from "@/lib/face/detect";
+import { detectDescriptor } from "@/lib/face/detect";
 import { warmup } from "@/lib/face/warmup";
 import type { ExitResponse } from "@/types/api";
 
-const LABELS: Record<string, string> = {
-  exited: "退場を確認しました。顔データの保管期限を設定しました。",
-  no_active_session: "滞在セッションがありません。ゲートを開放します。",
-  auth_failed: "識別できませんでした。係員による手動退場が必要です。",
+/** 不開放理由の表示文言。担当A の /api/exit が返す reason 区分に対応。 */
+const REASON_LABELS: Record<string, string> = {
+  none: "識別できませんでした。係員による手動退場が必要です。",
+  ambiguous: "識別が確定できません。係員にお声がけください。",
+  timeout: "タイムアウト。もう一度お試しください。",
 };
 
 export default function ExitPage() {
   const { videoRef, ready, error, start } = useCamera();
   const [status, setStatus] = useState("");
-  const [balance, setBalance] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function onStart() {
@@ -29,8 +32,8 @@ export default function ExitPage() {
     if (!videoRef.current) return;
     setBusy(true);
     setStatus("識別中...");
-    const det = await captureDescriptorFromVideo(videoRef.current);
-    if (!det.ok) {
+    const det = await detectDescriptor(videoRef.current);
+    if (det.status !== "ok" || det.vector === null) {
       setStatus("顔を検出できませんでした。");
       setBusy(false);
       return;
@@ -41,8 +44,13 @@ export default function ExitPage() {
       body: JSON.stringify({ vector: det.vector, purpose: "entry" }),
     });
     const data = (await res.json()) as ExitResponse;
-    setStatus(LABELS[data.result] ?? data.result);
-    setBalance(typeof data.balance === "number" ? data.balance : null);
+    if (data.released) {
+      const at = data.exitedAt ? `（${new Date(data.exitedAt).toLocaleString("ja-JP")}）` : "";
+      setStatus(`退場を確認しました${at}。顔データの保管期限を設定しました。`);
+    } else {
+      const reason = data.reason ?? "unknown";
+      setStatus(REASON_LABELS[reason] ?? `退場できません（${reason}）`);
+    }
     setBusy(false);
   }
 
@@ -66,7 +74,6 @@ export default function ExitPage() {
       </div>
       {error && <p style={{ color: "crimson" }}>カメラエラー: {error}</p>}
       {status && <p>{status}</p>}
-      {balance !== null && <p>残高: {balance} 円</p>}
     </main>
   );
 }

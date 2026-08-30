@@ -1,31 +1,11 @@
-// Shared vector types (frozen after Phase 0). Requirements 13.2, 13.8.
+// 【凍結対象】共有型: 顔特徴量ベクトル。design.md「Components and Interfaces」対応。
+// face-api.js の FaceRecognitionNet は 128 次元 descriptor を返す。
 
-/** face-api.js FaceRecognitionNet produces a 128-dim descriptor. */
-export const VECTOR_DIM = 128;
-
-/** A face feature template: a fixed-length numeric vector. */
+/** 顔特徴量ベクトル。128 次元の有限数値配列（VECTOR_DIM）。 */
 export type FaceVector = number[];
 
-/** Feature-model version identifier, embedded in persisted templates (要件13.8). */
+/** 特徴量ベクトルの次元数。face-api.js の FaceRecognition モデル出力に一致（要件13-3）。 */
+export const VECTOR_DIM = 128;
+
+/** 特徴量モデルのバージョン識別子（要件13-8）。 */
 export type ModelVersion = string;
-
-/** Default model version tag for the local face-api.js pipeline. */
-export const CURRENT_MODEL_VERSION: ModelVersion = "face-api.js@0.22.2/faceRecognitionNet";
-
-/** Identification score threshold. Euclidean distance below this = same person (要件3.4). */
-export const SCORE_THRESHOLD = 0.5;
-
-/** 1:N identification population cap (識別対象母集団上限, 要件3.2). */
-export const POPULATION_CAP = 500;
-
-/** Max templates per account (要件9.3). */
-export const MAX_TEMPLATES_PER_ACCOUNT = 5;
-
-/** A valid template has exactly VECTOR_DIM finite numeric elements, no gaps (要件13.3). */
-export function isValidFaceVector(v: unknown): v is FaceVector {
-  return (
-    Array.isArray(v) &&
-    v.length === VECTOR_DIM &&
-    v.every((x) => typeof x === "number" && Number.isFinite(x))
-  );
-}

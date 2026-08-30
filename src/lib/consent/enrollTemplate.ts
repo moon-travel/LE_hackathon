@@ -3,11 +3,13 @@
 import { prisma } from "@/lib/db";
 import { encodeTemplate } from "@/lib/codec";
 import { appendAudit } from "@/lib/audit/log";
-import {
-  MAX_TEMPLATES_PER_ACCOUNT,
-  CURRENT_MODEL_VERSION,
-  type FaceVector,
-} from "@/types/vector";
+import type { FaceVector } from "@/types/vector";
+// バージョン識別子は担当A の対応バージョン一覧と同一の定数を使う。別の文字列を書くと
+// 対応バージョン外として 1:N 識別の母集団から除外され、その顔で認証できなくなる（要件9-10）。
+import { CURRENT_MODEL_VERSION } from "@/lib/auth/modelVersion";
+
+/** 1アカウントあたりの保管テンプレート上限（要件9-3）。 */
+export const MAX_TEMPLATES_PER_ACCOUNT = 5;
 
 export interface StoreResult {
   templateId: string;

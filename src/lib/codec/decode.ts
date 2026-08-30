@@ -1,13 +1,15 @@
-// 担当C — Template_Codec decode. Requirements 13.2, 13.6, 13.10.
-import type { DecodeResult } from "@/types/codec";
+// 担当C — Template_Codec decode. 要件13-2 / 13-6 / 13-10。
+
+import type { DecodeResult, EncodedTemplate } from "@/types/codec";
 import { validateEncoded } from "./validate";
 
 /**
- * Decode persisted-form data into a vector + modelVersion. Throws CodecError on
- * invalid input (要件13.6). Returns the model version so Auth_Service can check
- * it against its supported-versions list (要件13.10).
+ * 永続化形式からベクトルとバージョン識別子を復元する。
+ * 不正な入力には CodecError を投げ、テンプレートを一切返さない（要件13-6）。
+ *
+ * バージョン識別子を返すので、Auth_Service は対応バージョン一覧と照合できる（要件13-10 / 9-10）。
  */
-export function decodeTemplate(data: string): DecodeResult {
-  const env = validateEncoded(data);
-  return { vector: env.vector, modelVersion: env.modelVersion };
+export function decodeTemplate(data: EncodedTemplate): DecodeResult {
+  const shape = validateEncoded(data);
+  return { vector: shape.vector, modelVersion: shape.version };
 }

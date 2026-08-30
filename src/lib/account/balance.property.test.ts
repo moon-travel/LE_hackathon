@@ -1,54 +1,69 @@
 // Feature: face-auth-onsen-entry, Property 5: 残高の範囲不変
 // Validates: Requirements 6.5
-// For any sequence of operations, balance stays within [0, 50000], and an
-// over-balance payment neither deducts nor advances (no negative, no overdraft).
-import { describe, it, expect } from "vitest";
+//
+// For any 操作列について、残高は常に0〜50000の範囲に収まり、超過支払い（残高不足）は
+// 減算も立替もしない。
+//
+// 純ロジック（computeNewBalance）で検証（DB非依存）。判断2: 残高更新は applyDelta 一点に集約され、
+// その範囲検証は computeNewBalance が担う。ここでモデルとして任意操作列を適用する。
+import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { applyDeduction, creditBalance, type PureState } from "./charge";
-import { BALANCE_MAX, BALANCE_MIN, chargeFits } from "./balance";
+import { computeNewBalance, BalanceRangeError } from "./balance";
+import { BALANCE_MAX, BALANCE_MIN } from "./constants";
 
-// A pure credit that respects the cap (mirrors the route's cap check + creditBalance).
-function pureCredit(balance: number, amount: number): number {
-  const { ok } = chargeFits(balance, amount);
-  return ok ? balance + amount : balance;
-}
+/** 操作: チャージ(+delta) または 支払い(-delta)。金額は整数円。 */
+type Op = { kind: "charge" | "pay"; amount: number };
 
-type Op = { kind: "pay"; amount: number } | { kind: "charge"; amount: number };
+const opArb: fc.Arbitrary<Op> = fc.record({
+  kind: fc.constantFrom<"charge" | "pay">("charge", "pay"),
+  amount: fc.integer({ min: 1, max: 60_000 }),
+});
 
-const opArb: fc.Arbitrary<Op> = fc.oneof(
-  fc.record({ kind: fc.constant("pay" as const), amount: fc.integer({ min: 1, max: 60000 }) }),
-  fc.record({ kind: fc.constant("charge" as const), amount: fc.integer({ min: 1, max: 60000 }) }),
-);
+describe("Property 5: 残高の範囲不変", () => {
+  it("任意の操作列を適用しても残高は常に0〜50000に収まり、超過支払いは減算しない", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: BALANCE_MIN, max: BALANCE_MAX }),
+        fc.array(opArb, { minLength: 0, maxLength: 50 }),
+        (initial, ops) => {
+          let balance = initial;
+          for (const op of ops) {
+            const delta = op.kind === "charge" ? op.amount : -op.amount;
+            try {
+              const next = computeNewBalance(balance, delta);
+              // 適用できた場合、必ず範囲内
+              expect(next).toBeGreaterThanOrEqual(BALANCE_MIN);
+              expect(next).toBeLessThanOrEqual(BALANCE_MAX);
+              // 支払いなら立替せず（減算後も0以上）、ちょうど amount 減算
+              if (op.kind === "pay") {
+                expect(next).toBe(balance - op.amount);
+                expect(next).toBeGreaterThanOrEqual(0);
+              }
+              balance = next;
+            } catch (e) {
+              // 範囲外は拒否され残高不変（減算も立替もしない）
+              expect(e).toBeInstanceOf(BalanceRangeError);
+            }
+            // どの分岐でも常に範囲内
+            expect(balance).toBeGreaterThanOrEqual(BALANCE_MIN);
+            expect(balance).toBeLessThanOrEqual(BALANCE_MAX);
+          }
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
 
-describe("Property 5: balance range invariant", () => {
-  it("balance always within [0, 50000]; overdraft never occurs", () => {
+  it("残高不足の支払いは拒否され残高が変わらない", () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 0, max: BALANCE_MAX }),
-        fc.array(opArb, { minLength: 0, maxLength: 30 }),
-        (start, ops) => {
-          let state: PureState = { balance: start, transactions: [] };
-          let keySeq = 0;
-
-          for (const op of ops) {
-            if (op.kind === "charge") {
-              state = { ...state, balance: pureCredit(state.balance, op.amount) };
-            } else {
-              const before = state.balance;
-              const { next, outcome } = applyDeduction(state, {
-                amount: op.amount,
-                terminal: "t",
-                idempotencyKey: `k${keySeq++}`,
-                at: new Date().toISOString(),
-              });
-              state = next;
-              if (outcome.result === "insufficient") {
-                // Over-balance payment: no deduction, no overdraft (要件6.5).
-                expect(state.balance).toBe(before);
-              }
-            }
-            expect(state.balance).toBeGreaterThanOrEqual(BALANCE_MIN);
-            expect(state.balance).toBeLessThanOrEqual(BALANCE_MAX);
+        fc.integer({ min: 1, max: 60_000 }),
+        (balance, amount) => {
+          if (amount > balance) {
+            expect(() => computeNewBalance(balance, -amount)).toThrow(
+              BalanceRangeError,
+            );
           }
         },
       ),
@@ -56,6 +71,3 @@ describe("Property 5: balance range invariant", () => {
     );
   });
 });
-
-// Keep creditBalance import meaningful for type-checking parity with the DB path.
-void creditBalance;

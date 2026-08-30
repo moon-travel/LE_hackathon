@@ -1,68 +1,68 @@
-// 担当: 共有 — extract a 128-dim descriptor from a camera frame IN THE BROWSER,
-// then discard the source image. The raw image is never persisted and never
-// sent to the server (要件1.7 元画像破棄, 要件11.4 端末外に出さない).
-"use client";
+// 【共有カーネル雛形】カメラ画像 → 128次元 descriptor 抽出。
+//
+// 根幹の制約（要件1-7 / 11-4）:
+//   - 顔特徴量算出の完了後、元の顔画像を揮発性メモリ上から破棄する（要件1-7）。
+//   - 顔画像を永続ストレージへ書き込まない。サーバーへ送るのは128次元ベクトルと purpose のみ。
+//   - 顔処理はブラウザ内で完結し、画像データが端末外へ出ない（要件11-4）。
+//
+// 呼び出し側は本関数の戻り値（FaceVector）だけをAPIへ送ること。入力画像要素は本関数内で
+// 参照を解放し、以降利用しない。
 
-import { loadModels, faceapi } from "./loadModels";
-import { VECTOR_DIM, type FaceVector } from "@/types/vector";
+import * as faceapi from "face-api.js";
+import { VECTOR_DIM } from "@/types/vector";
+import type { FaceVector } from "@/types/vector";
 
-export type DetectResult =
-  | { ok: true; vector: FaceVector }
-  | { ok: false; reason: "no_face" | "bad_dimension" };
+/** detect が受け取り可能な画像入力（ブラウザ）。 */
+export type ImageInput = HTMLVideoElement | HTMLCanvasElement | HTMLImageElement;
 
-/**
- * Detect one face in the given source and return its 128-dim descriptor.
- *
- * The caller passes a live video/image/canvas element. After computing the
- * descriptor we do NOT retain any pixel data — the returned value is only the
- * numeric vector. Callers should also stop the camera stream / clear canvases
- * they own once this resolves.
- */
-export async function detectDescriptor(
-  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement,
-): Promise<DetectResult> {
-  await loadModels();
-
-  const detection = await faceapi
-    .detectSingleFace(source, new faceapi.TinyFaceDetectorOptions())
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-
-  if (!detection) {
-    return { ok: false, reason: "no_face" };
-  }
-
-  // Float32Array(128) -> plain number[] so it serializes as JSON cleanly.
-  const vector = Array.from(detection.descriptor) as FaceVector;
-
-  if (vector.length !== VECTOR_DIM) {
-    return { ok: false, reason: "bad_dimension" };
-  }
-
-  return { ok: true, vector };
+export interface DetectResult {
+  /** 128次元 descriptor。none の場合は null。 */
+  vector: FaceVector | null;
+  /** 検出された顔が0件/複数などの区分。 */
+  status: "ok" | "no_face" | "error";
 }
 
 /**
- * Capture a single frame from a running <video> onto a throwaway canvas,
- * compute the descriptor, and immediately clear the canvas pixels.
- * The canvas is local to this function and discarded on return (要件1.7).
+ * 画像入力から単一顔を検出し 128次元ベクトルを抽出する。
+ * 抽出後、入力画像バッファへの参照を破棄する（要件1-7）。
+ *
+ * 注意: 実モデルは Phase2 で public/models/ に配置。ここではロジックの型契約を確定する雛形。
  */
-export async function captureDescriptorFromVideo(
-  video: HTMLVideoElement,
-): Promise<DetectResult> {
-  const canvas = document.createElement("canvas");
-  canvas.width = video.videoWidth || 320;
-  canvas.height = video.videoHeight || 240;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return { ok: false, reason: "no_face" };
-
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+export async function detectDescriptor(input: ImageInput): Promise<DetectResult> {
   try {
-    return await detectDescriptor(canvas);
-  } finally {
-    // Discard the raw frame from the volatile canvas (要件1.7 揮発性メモリ破棄).
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.width = 0;
-    canvas.height = 0;
+    const detection = await faceapi
+      .detectSingleFace(input, new faceapi.TinyFaceDetectorOptions())
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    // --- 元画像の破棄（要件1-7）: 入力が canvas なら内容をクリアし参照を解放する ---
+    disposeImageInput(input);
+
+    if (!detection) {
+      return { vector: null, status: "no_face" };
+    }
+
+    const vector = Array.from(detection.descriptor) as FaceVector;
+    if (vector.length !== VECTOR_DIM) {
+      return { vector: null, status: "error" };
+    }
+    return { vector, status: "ok" };
+  } catch {
+    disposeImageInput(input);
+    return { vector: null, status: "error" };
   }
+}
+
+/**
+ * 元画像バッファを揮発性メモリ上から破棄する（要件1-7）。
+ * canvas は内容をクリアし寸法を0にして解放を促す。
+ */
+export function disposeImageInput(input: ImageInput): void {
+  if (typeof HTMLCanvasElement !== "undefined" && input instanceof HTMLCanvasElement) {
+    const ctx = input.getContext("2d");
+    ctx?.clearRect(0, 0, input.width, input.height);
+    input.width = 0;
+    input.height = 0;
+  }
+  // video / img は呼び出し側が参照を手放すことで解放される。ここでは再利用禁止の意図を明示。
 }

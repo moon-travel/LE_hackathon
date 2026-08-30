@@ -5,9 +5,9 @@
 
 import { useState } from "react";
 import { useCamera } from "../useCamera";
-import { captureDescriptorFromVideo } from "@/lib/face/detect";
+import { detectDescriptor } from "@/lib/face/detect";
 import { warmup } from "@/lib/face/warmup";
-import type { EnrollResponse } from "@/types/api";
+import type { EnrollResponse, ApiError } from "@/types/api";
 
 const CONSENT_VERSION = "v1";
 
@@ -38,8 +38,8 @@ export default function EnrollPage() {
     let vector: number[] | null = null;
     for (let attempt = 1; attempt <= 3 && !vector; attempt++) {
       setStatus(`顔を検出中... (試行 ${attempt}/3)`);
-      const det = await captureDescriptorFromVideo(videoRef.current);
-      if (det.ok) vector = det.vector;
+      const det = await detectDescriptor(videoRef.current);
+      if (det.status === "ok") vector = det.vector;
     }
     if (!vector) {
       setStatus("顔特徴量を算出できませんでした。係員にお声がけください。");
@@ -58,9 +58,16 @@ export default function EnrollPage() {
         retentionDays,
       }),
     });
-    const data = (await res.json()) as EnrollResponse;
-    setResult(data);
-    setStatus(data.ok ? "登録が完了しました。" : `登録失敗: ${data.error ?? ""}`);
+    // 成否は HTTP ステータスで判定する（凍結契約は成功時 EnrollResponse / 失敗時 ApiError）。
+    if (res.ok) {
+      const data = (await res.json()) as EnrollResponse;
+      setResult(data);
+      setStatus("登録が完了しました。");
+    } else {
+      const err = (await res.json()) as ApiError;
+      setResult(null);
+      setStatus(`登録失敗: ${err.error}`);
+    }
     // Stop the camera; the raw frames are already discarded (要件1.7).
     stop();
     setBusy(false);
@@ -127,10 +134,9 @@ export default function EnrollPage() {
 
       {error && <p style={{ color: "crimson" }}>カメラエラー: {error}</p>}
       {status && <p>{status}</p>}
-      {result?.ok && (
+      {result && (
         <p style={{ color: "green" }}>
-          アカウントID: {result.accountId}（テンプレート {result.templateCount} 件
-          {result.evictedOldest ? " / 最古を1件削除" : ""}）
+          アカウントID: {result.accountId}（テンプレート {result.templateCount} 件）
         </p>
       )}
     </main>

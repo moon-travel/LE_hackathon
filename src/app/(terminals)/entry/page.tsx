@@ -1,18 +1,20 @@
-// 担当C — Entry_Gate UI. Requirements 3.1, 4.2.
+// 担当C — Entry_Gate UI. _Requirements: 3.1, 4.2_
+//
+// 顔処理はブラウザ内で完結し、サーバーへ送るのは 128 次元ベクトルと purpose だけ（要件11-4）。
+// 応答は凍結契約 EntryResponse（admitted + reason）に従って解釈する。
 "use client";
 
 import { useState } from "react";
 import { useCamera } from "../useCamera";
-import { captureDescriptorFromVideo } from "@/lib/face/detect";
+import { detectDescriptor } from "@/lib/face/detect";
 import { warmup } from "@/lib/face/warmup";
 import type { EntryResponse } from "@/types/api";
 
-const LABELS: Record<string, string> = {
-  entered: "入場を許可しました（ゲート開放）",
-  reentered: "再入場を許可しました（セッション維持）",
-  no_pass: "有効な入浴券がありません。購入が必要です。",
-  auth_failed: "認証失敗。登録端末での再登録をご案内します。",
+/** 不許可理由の表示文言。担当A の /api/entry が返す reason 区分に対応。 */
+const REASON_LABELS: Record<string, string> = {
+  none: "認証できませんでした。登録端末での再登録をご案内します。",
   ambiguous: "識別が確定できません。係員にお声がけください。",
+  no_pass: "有効な入浴券がありません。購入が必要です。",
   timeout: "タイムアウト。もう一度お試しください。",
 };
 
@@ -31,8 +33,8 @@ export default function EntryPage() {
     if (!videoRef.current) return;
     setBusy(true);
     setStatus("識別中...");
-    const det = await captureDescriptorFromVideo(videoRef.current);
-    if (!det.ok) {
+    const det = await detectDescriptor(videoRef.current);
+    if (det.status !== "ok" || det.vector === null) {
       setStatus("顔を検出できませんでした。もう一度お試しください。");
       setBusy(false);
       return;
@@ -43,7 +45,12 @@ export default function EntryPage() {
       body: JSON.stringify({ vector: det.vector, purpose: "entry" }),
     });
     const data = (await res.json()) as EntryResponse;
-    setStatus(LABELS[data.result] ?? data.result);
+    if (data.admitted) {
+      setStatus("入場を許可しました（ゲート開放）");
+    } else {
+      const reason = data.reason ?? "unknown";
+      setStatus(REASON_LABELS[reason] ?? `入場できません（${reason}）`);
+    }
     setBusy(false);
   }
 

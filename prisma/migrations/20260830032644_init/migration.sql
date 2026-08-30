@@ -10,7 +10,8 @@ CREATE TABLE "Account" (
     "consentVersion" TEXT,
     "autoChargeEnabled" BOOLEAN NOT NULL DEFAULT false,
     "autoChargeAmount" INTEGER,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
 );
 
 -- CreateTable
@@ -21,7 +22,7 @@ CREATE TABLE "FaceTemplate" (
     "modelVersion" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "expireAt" DATETIME,
-    CONSTRAINT "FaceTemplate_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "FaceTemplate_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -33,17 +34,17 @@ CREATE TABLE "Session" (
     "exitedAt" DATETIME,
     "passHistory" TEXT NOT NULL DEFAULT '[]',
     "transactions" TEXT NOT NULL DEFAULT '[]',
-    CONSTRAINT "Session_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "Session_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
 -- CreateTable
 CREATE TABLE "Pass" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "accountId" TEXT NOT NULL,
-    "status" TEXT NOT NULL DEFAULT 'VALID',
     "expiresAt" DATETIME NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'VALID',
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "Pass_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "Pass_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
 -- CreateTable

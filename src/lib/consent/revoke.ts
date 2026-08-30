@@ -27,7 +27,8 @@ export async function revokeEnrollmentConsent(accountId: string): Promise<Revoke
   });
   await appendAudit("consent_revoke", { item: "enrollment" }, accountId);
 
-  // Synchronous deletion (respects ACTIVE session per 要件10.8).
-  const del = await deleteTemplatesForAccount(accountId, "consent_revoke", true);
-  return { ok: true, deletedTemplates: del.deleted, deferred: del.deferred };
+  // 同期削除（ACTIVE セッション保持中は要件10-8 に従い延期される）。
+  // 削除の契機は担当A の DeletionTrigger 区分に合わせる。同意撤回は利用者の要求なので USER_REQUEST。
+  const del = await deleteTemplatesForAccount(accountId, "USER_REQUEST");
+  return { ok: true, deletedTemplates: del.deletedCount, deferred: del.deferred };
 }
